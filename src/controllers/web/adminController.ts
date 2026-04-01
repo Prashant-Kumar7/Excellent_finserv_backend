@@ -1,0 +1,416 @@
+import type { Request, Response } from "express";
+import bcrypt from "bcryptjs";
+import { prisma } from "../../shared/db.js";
+import type { AdminRequest } from "../../shared/middleware/adminAuth.js";
+import { signAdminSession } from "../../shared/auth/adminSession.js";
+
+type AdminRow = {
+  id: number;
+  email: string;
+  password: string;
+};
+
+type UserRow = {
+  regNo: string;
+  sponser_id: string | null;
+};
+
+function mlmPercentage(level: number, amount: number) {
+  const percentages: Record<number, number> = {
+    1: 0.1,
+    2: 0.1,
+    3: 0.08,
+    4: 0.08,
+    5: 0.06,
+    6: 0.06,
+    7: 0.04,
+    8: 0.02,
+    9: 0.02,
+    10: 0.01,
+    11: 0.005,
+    12: 0.005
+  };
+  return amount * (percentages[level] ?? 0);
+}
+
+async function levelMlm(regNo: string, amount: number, sourceId: number) {
+  try {
+    await prisma.$transaction(async (tx) => {
+      let currentRegNo = regNo;
+      for (let level = 1; level <= 12; level += 1) {
+        const user = await tx.user.findFirst({
+          where: { regNo: currentRegNo },
+          select: { regNo: true, sponser_id: true }
+        });
+        if (!user?.sponser_id) break;
+
+        const sponsorRegNo = String(user.sponser_id);
+        const eligible = await tx.perday.findFirst({
+          where: { regNo: sponsorRegNo },
+          select: { id: true }
+        });
+
+        if (eligible) {
+          const dup = await tx.wallet.findFirst({
+            where: { regNo: sponsorRegNo, source_id: sourceId, level },
+            select: { id: true }
+          });
+          if (!dup) {
+            await tx.wallet.create({
+              data: {
+                regNo: sponsorRegNo,
+                amount: mlmPercentage(level, amount),
+                level,
+                source_id: sourceId,
+                comment: "level_income"
+              }
+            });
+          }
+        }
+        currentRegNo = sponsorRegNo;
+      }
+    });
+  } catch (e) {
+    throw e;
+  }
+}
+
+export async function adminLogin(_req: Request, res: Response) {
+  return res.json({ status: "ok", message: "Admin login endpoint" });
+}
+
+export async function adminLoginSubmit(req: Request, res: Response) {
+  const { email, password } = req.body as { email?: string; password?: string };
+  if (!email || !password) {
+    return res.status(422).json({ status: "error", message: "email and password required" });
+  }
+  const admin = await prisma.admin.findFirst({
+    where: { email },
+    select: { id: true, email: true, password: true }
+  });
+  if (!admin) return res.status(401).json({ status: "error", message: "Invalid email or password." });
+
+  const ok = await bcrypt.compare(password, admin.password ?? "");
+  if (!ok) return res.status(401).json({ status: "error", message: "Invalid email or password." });
+
+  const token = signAdminSession({ adminId: admin.id, email: admin.email ?? email });
+  res.cookie("admin_token", token, { httpOnly: true, sameSite: "lax" });
+  return res.json({ status: "done", token });
+}
+
+export async function adminDashboard(_req: AdminRequest, res: Response) {
+  const [totalUsers, totalCategory, totalTender, totalProducts] = await Promise.all([
+    prisma.user.count(),
+    prisma.category.count(),
+    prisma.tender.count(),
+    prisma.product.count()
+  ]);
+  return res.json({
+    totalUsers,
+    totalCategory,
+    totalTender,
+    totalProducts
+  });
+}
+
+export async function adminLogout(req: Request, res: Response) {
+  res.clearCookie("admin_token");
+  return res.json({ status: "done", message: "Logout successful." });
+}
+
+export async function depositList(req: AdminRequest, res: Response) {
+  const status = req.params.status;
+  if (!status) return res.status(422).json({ status: "error", message: "status is required" });
+  const deposits = await prisma.deposit.findMany({
+    where: { status },
+    orderBy: { created_at: "desc" }
+  });
+
+  const regNos = deposits.map((d) => d.regNo).filter((v): v is string => typeof v === "string");
+  const users = regNos.length ? await prisma.user.findMany({ where: { regNo: { in: regNos } } }) : [];
+  const userMap = new Map(users.map((u) => [u.regNo ?? "", u]));
+
+  const data = deposits.map((d) => {
+    const u = userMap.get(d.regNo ?? "");
+    return {
+      ...d,
+      name: u?.name ?? null,
+      last_name: u?.last_name ?? null,
+      user_mobile: u?.mobile ?? null
+    };
+  });
+
+  return res.json({ status: "done", data });
+}
+
+export async function updateDepositStatus(req: AdminRequest, res: Response) {
+  const id = Number(req.params.id);
+  const status = (req.body as { status?: string }).status;
+  if (!Number.isFinite(id) || !status) {
+    return res.status(422).json({ status: "error", message: "Invalid input" });
+  }
+  const deposit = await prisma.deposit.findUnique({ where: { id } });
+  if (!deposit) return res.status(404).json({ status: "error", message: "Deposit not found" });
+  const prev = deposit.status ?? null;
+  await prisma.deposit.update({
+    where: { id },
+    data: { status, updated_at: new Date() }
+  });
+  if (status === "approved" && prev !== "approved") {
+    if (!deposit.regNo) {
+      return res.status(400).json({ status: "error", message: "deposit.regNo missing" });
+    }
+    await prisma.bank.create({
+      data: {
+        regNo: deposit.regNo,
+        amount: Number(deposit.amount ?? 0),
+        comment: `Deposit Approved ID ${id}`
+      }
+    });
+  }
+  return res.json({ status: "done", message: "Status Updated" });
+}
+
+export async function packagePurchaseList(req: AdminRequest, res: Response) {
+  const status = req.params.status;
+  if (!status) return res.status(422).json({ status: "error", message: "status is required" });
+  const purchases = await prisma.package.findMany({
+    where: { status },
+    orderBy: { id: "desc" }
+  });
+  const regNos = purchases.map((p) => p.regNo).filter((v): v is string => typeof v === "string");
+  const users = regNos.length ? await prisma.user.findMany({ where: { regNo: { in: regNos } } }) : [];
+  const userMap = new Map(users.map((u) => [u.regNo ?? "", u]));
+
+  const data = purchases.map((p) => ({
+    ...p,
+    user_name: userMap.get(p.regNo ?? "")?.name ?? null
+  }));
+  return res.json({ status: "done", data });
+}
+
+export async function updatePackagePurchaseStatus(req: AdminRequest, res: Response) {
+  const id = Number(req.params.id);
+  const status = (req.body as { status?: string }).status;
+  if (!Number.isFinite(id) || !status) {
+    return res.status(422).json({ status: "error", message: "Invalid input" });
+  }
+  const purchase = await prisma.package.findUnique({ where: { id } });
+  if (!purchase) return res.status(404).json({ status: "error", message: "Record not found" });
+
+  if (status === "rejected") {
+    await prisma.package.update({ where: { id }, data: { status: "rejected" } });
+    return res.json({ status: "done", message: "Status rejected successfully" });
+  }
+
+  if (status === "approved") {
+    if (purchase.status !== "pending") {
+      return res.status(400).json({ status: "error", message: "Only pending can be approved" });
+    }
+    await prisma.package.update({ where: { id }, data: { status: "approved" } });
+    if (!purchase.regNo) return res.status(400).json({ status: "error", message: "purchase.regNo missing" });
+    await prisma.perday.create({
+      data: { regNo: purchase.regNo, amount: Number(purchase.amount ?? 0) }
+    });
+    await levelMlm(purchase.regNo, Number(purchase.amount ?? 0), id);
+    return res.json({ status: "done", message: "Approved & perday entry added" });
+  }
+
+  return res.status(400).json({ status: "error", message: "Invalid status" });
+}
+
+export async function incomeWithdrawList(req: AdminRequest, res: Response) {
+  const status = req.params.status;
+  if (!status) return res.status(422).json({ status: "error", message: "status is required" });
+  const rows = await prisma.wallet.findMany({
+    where: { status },
+    orderBy: { id: "desc" }
+  });
+
+  const regNos = rows.map((r) => r.regNo).filter((v): v is string => typeof v === "string");
+  const users = regNos.length ? await prisma.user.findMany({ where: { regNo: { in: regNos } } }) : [];
+  const userMap = new Map(users.map((u) => [u.regNo ?? "", u]));
+
+  const data = rows.map((r) => {
+    const u = userMap.get(r.regNo ?? "");
+    return {
+      ...r,
+      user_name: u?.name ?? null,
+      bank_name: (u as any)?.bank_name ?? null,
+      ifsc: (u as any)?.ifsc ?? null,
+      upi_id: (u as any)?.upi_id ?? null,
+      account_number: (u as any)?.account_number ?? null
+    };
+  });
+
+  return res.json({ status: "done", data });
+}
+
+export async function walletWithdrawList(req: AdminRequest, res: Response) {
+  const status = req.params.status;
+  if (!status) return res.status(422).json({ status: "error", message: "status is required" });
+  const rows = await prisma.bank.findMany({
+    where: { status },
+    orderBy: { id: "desc" }
+  });
+
+  const regNos = rows.map((r) => r.regNo).filter((v): v is string => typeof v === "string");
+  const users = regNos.length ? await prisma.user.findMany({ where: { regNo: { in: regNos } } }) : [];
+  const userMap = new Map(users.map((u) => [u.regNo ?? "", u]));
+
+  const data = rows.map((r) => {
+    const u = userMap.get(r.regNo ?? "");
+    return {
+      ...r,
+      user_name: u?.name ?? null,
+      bank_name: (u as any)?.bank_name ?? null,
+      ifsc: (u as any)?.ifsc ?? null,
+      upi_id: (u as any)?.upi_id ?? null,
+      account_number: (u as any)?.account_number ?? null
+    };
+  });
+
+  return res.json({ status: "done", data });
+}
+
+export async function updateIncomeWithdrawStatus(req: AdminRequest, res: Response) {
+  const id = Number(req.params.id);
+  const status = (req.body as { status?: string }).status;
+  if (!status || !Number.isFinite(id)) {
+    return res.status(422).json({ status: "error", message: "Invalid input" });
+  }
+  const row = await prisma.wallet.findUnique({ where: { id } });
+  if (!row) return res.status(404).json({ status: "error", message: "Record not found" });
+  if (row.status !== "pending") return res.status(400).json({ status: "error", message: "Already processed" });
+  await prisma.wallet.update({ where: { id }, data: { status } });
+  if (status === "rejected") {
+    if (!row.regNo) return res.status(400).json({ status: "error", message: "wallet.regNo missing" });
+    await prisma.wallet.create({
+      data: { regNo: row.regNo, amount: -1 * Number(row.amount ?? 0), comment: "cancel_withdraw_return" }
+    });
+  }
+  return res.json({ status: "done", message: "Status updated successfully" });
+}
+
+export async function updateWalletWithdrawStatus(req: AdminRequest, res: Response) {
+  const id = Number(req.params.id);
+  const status = (req.body as { status?: string }).status;
+  if (!status || !Number.isFinite(id)) {
+    return res.status(422).json({ status: "error", message: "Invalid input" });
+  }
+  const row = await prisma.bank.findUnique({ where: { id } });
+  if (!row) return res.status(404).json({ status: "error", message: "Record not found" });
+  if (row.status !== "pending") return res.status(400).json({ status: "error", message: "Already processed" });
+  await prisma.bank.update({ where: { id }, data: { status, updated_at: new Date() } });
+  if (status === "rejected") {
+    if (!row.regNo) return res.status(400).json({ status: "error", message: "bank.regNo missing" });
+    await prisma.bank.create({
+      data: {
+        regNo: row.regNo,
+        amount: -1 * Number(row.amount ?? 0),
+        comment: "Withdraw rejected refund"
+      }
+    });
+  }
+  return res.json({ status: "done", message: "Status updated successfully" });
+}
+
+export async function insuranceList(req: AdminRequest, res: Response) {
+  const status = req.params.status;
+  if (!status) return res.status(422).json({ status: "error", message: "status is required" });
+  const rows = await prisma.insurance.findMany({
+    where: { status },
+    orderBy: { id: "desc" }
+  });
+  const regNos = rows.map((r) => r.regNo).filter((v): v is string => typeof v === "string");
+  const users = regNos.length ? await prisma.user.findMany({ where: { regNo: { in: regNos } } }) : [];
+  const userMap = new Map(users.map((u) => [u.regNo ?? "", u]));
+  const data = rows.map((r) => {
+    const u = userMap.get(r.regNo ?? "");
+    return { ...r, user_name: u?.name ?? null, user_mobile: u?.mobile ?? null };
+  });
+  return res.json({ status: "done", data });
+}
+
+export async function cibileList(req: AdminRequest, res: Response) {
+  const status = req.params.status;
+  if (!status) return res.status(422).json({ status: "error", message: "status is required" });
+  const rows = await prisma.cibileReportRequest.findMany({
+    where: { status },
+    orderBy: { id: "desc" }
+  });
+  const regNos = rows.map((r) => r.regNo).filter((v): v is string => typeof v === "string");
+  const users = regNos.length ? await prisma.user.findMany({ where: { regNo: { in: regNos } } }) : [];
+  const userMap = new Map(users.map((u) => [u.regNo ?? "", u]));
+  const data = rows.map((r) => {
+    const u = userMap.get(r.regNo ?? "");
+    return { ...r, user_name: u?.name ?? null, user_mobile: u?.mobile ?? null };
+  });
+  return res.json({ status: "done", data });
+}
+
+export async function loanList(req: AdminRequest, res: Response) {
+  const status = req.params.status;
+  if (!status) return res.status(422).json({ status: "error", message: "status is required" });
+  const rows = await prisma.loan.findMany({
+    where: { status },
+    orderBy: { id: "desc" }
+  });
+  const regNos = rows.map((r) => r.regNo).filter((v): v is string => typeof v === "string");
+  const users = regNos.length ? await prisma.user.findMany({ where: { regNo: { in: regNos } } }) : [];
+  const userMap = new Map(users.map((u) => [u.regNo ?? "", u]));
+  const data = rows.map((r) => {
+    const u = userMap.get(r.regNo ?? "");
+    return { ...r, user_name: u?.name ?? null, user_mobile: u?.mobile ?? null };
+  });
+  return res.json({ status: "done", data });
+}
+
+export async function loanEdit(req: AdminRequest, res: Response) {
+  const id = Number(req.params.id);
+  const loan = await prisma.loan.findUnique({ where: { id } });
+  return res.json({ status: "done", data: loan ?? null });
+}
+
+export async function loanUpdate(req: AdminRequest, res: Response) {
+  const id = Number(req.params.id);
+  const body = req.body as Record<string, unknown>;
+  const data: Record<string, unknown> = {};
+  if ("status" in body) data.status = body.status;
+  if ("amount" in body) data.amount = body.amount ? Number(body.amount) : 0;
+  if ("remarks" in body) data.remarks = body.remarks as string | null;
+  if (!Object.keys(data).length) return res.status(422).json({ status: "error", message: "No fields to update" });
+  await prisma.loan.update({ where: { id }, data: data as any });
+  return res.json({ status: "done", message: "Loan updated" });
+}
+
+export async function updateLoanStatus(req: AdminRequest, res: Response) {
+  const id = Number(req.params.id);
+  const status = (req.body as { status?: string }).status;
+  if (!status || !Number.isFinite(id)) {
+    return res.status(422).json({ status: "error", message: "Invalid input" });
+  }
+  await prisma.loan.update({ where: { id }, data: { status } });
+  return res.json({ status: "done", message: "Status updated successfully" });
+}
+
+export async function updateCibileStatus(req: AdminRequest, res: Response) {
+  const id = Number(req.params.id);
+  const status = (req.body as { status?: string }).status;
+  if (!status || !Number.isFinite(id)) {
+    return res.status(422).json({ status: "error", message: "Invalid input" });
+  }
+  await prisma.cibileReportRequest.update({ where: { id }, data: { status } });
+  return res.json({ status: "done", message: "Status updated successfully" });
+}
+
+export async function updateInsuranceStatus(req: AdminRequest, res: Response) {
+  const id = Number(req.params.id);
+  const status = (req.body as { status?: string }).status;
+  if (!status || !Number.isFinite(id)) {
+    return res.status(422).json({ status: "error", message: "Invalid input" });
+  }
+  await prisma.insurance.update({ where: { id }, data: { status } });
+  return res.json({ status: "done", message: "Status updated successfully" });
+}
+
