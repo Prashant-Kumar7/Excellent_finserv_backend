@@ -98,6 +98,7 @@ async function main() {
   });
 
   const userSeeds: Array<{
+    id?: number;
     regNo: string;
     name: string;
     last_name: string;
@@ -110,7 +111,23 @@ async function main() {
     upi_id?: string;
     account_number?: string;
   }> = [
+    // AppConfig.defaultSponsorMobile expects a sponsor to exist.
     {
+      id: 1,
+      regNo: "EXSPONSOR",
+      name: "Default",
+      last_name: "Sponsor",
+      email: "sponsor@example.com",
+      mobile: "8979512745",
+      buyer: 1,
+      seller: 1,
+      bank_name: "SBI",
+      ifsc: "SBIN0000999",
+      upi_id: "sponsor@upi",
+      account_number: "111122223333",
+    },
+    {
+      id: 2,
       regNo: "USR001",
       name: "Ravi",
       last_name: "Kumar",
@@ -120,6 +137,7 @@ async function main() {
       seller: 0,
     },
     {
+      id: 3,
       regNo: "USR002",
       name: "Anita",
       last_name: "Sharma",
@@ -133,6 +151,7 @@ async function main() {
       account_number: "1234567890",
     },
     {
+      id: 4,
       regNo: "USR003",
       name: "Vikram",
       last_name: "Singh",
@@ -142,6 +161,7 @@ async function main() {
       seller: 0,
     },
     {
+      id: 5,
       regNo: "USR004",
       name: "Priya",
       last_name: "Nair",
@@ -155,6 +175,7 @@ async function main() {
       account_number: "9876543210",
     },
     {
+      id: 6,
       regNo: "USR005",
       name: "Arjun",
       last_name: "Mehta",
@@ -174,6 +195,7 @@ async function main() {
       const hasBank = u.bank_name !== undefined;
       return prisma.user.create({
         data: {
+          ...(u.id !== undefined ? { id: u.id } : {}),
           regNo: u.regNo,
           name: u.name,
           last_name: u.last_name,
@@ -199,7 +221,8 @@ async function main() {
     })
   );
 
-  const [buyer1, seller1, buyer2, seller2, both] = users;
+  // Keep the existing logic naming, but we now have a sponsor user at index 0.
+  const [_sponsor, buyer1, seller1, buyer2, seller2, both] = users;
 
   await prisma.admin.create({
     data: {
