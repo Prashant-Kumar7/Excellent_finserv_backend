@@ -35,6 +35,15 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
       .filter((x) => (comment ? x.comment === comment : true))
       .reduce((a, b) => a + Number(b.amount ?? 0), 0);
   const packageAmount = Number(pkg?.amount ?? 0);
+  const settingsOut = settings
+    ? {
+        ...settings,
+        // Flutter app expects these as ints (not Decimal strings).
+        deposit_limit: Number((settings as any).deposit_limit ?? 0),
+        deposit_admin_charge: Number((settings as any).deposit_admin_charge ?? 0),
+        deposit_gst: Number((settings as any).deposit_gst ?? 0)
+      }
+    : null;
 
   return res.json({
     status: "done",
@@ -42,7 +51,7 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
     bank_balance: sum(bankRows),
     income_balance: sum(walletRows),
     total_deposit: sum(bankRows),
-    settings,
+    settings: settingsOut,
     Referral_Income: sum(coinRows, "Referral_Income") + sum(coinRows, "Self_Income"),
     Wallet_team_Income: sum(walletRows, "Wallet_team_Income"),
     Wallet_Income: sum(walletRows, "Wallet_Income"),
