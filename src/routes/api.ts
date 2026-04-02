@@ -15,6 +15,7 @@ import {
   bankHistory,
   bankWalletWithdrawCancel,
   cashfreeWebhook,
+  createCashfreeSession,
   cibilHistory,
   cibilSubmit,
   coinWalletWithdraw,
@@ -112,6 +113,7 @@ protectedUserRouter.get("/support/my", myTickets);
 protectedUserRouter.get("/deposit-history", depositHistory);
 protectedUserRouter.post("/deposit", deposit);
 protectedUserRouter.post("/deposit2", deposit2);
+protectedUserRouter.post("/cashfree/create-session", createCashfreeSession);
 protectedUserRouter.get("/bank-history", bankHistory);
 protectedUserRouter.post("/purchase_package", purchasePackage);
 protectedUserRouter.get("/purchase_package_history", purchasePackageHistory);

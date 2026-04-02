@@ -394,3 +394,20 @@ model CibileReportRequest {
   @@map("cibile_report_request")
 }
 
+/// Tracks Cashfree PG orders for non-wallet flows (package, CIBIL, loan service fee).
+model CashfreeOrder {
+  id             Int      @id @default(autoincrement())
+  order_id       String   @unique
+  reg_no         String
+  purpose        String
+  order_amount   Decimal  @db.Decimal(12, 2)
+  currency       String   @default("INR")
+  status         String   @default("pending")
+  meta           Json?
+  cf_payment_id  String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@map("cashfree_orders")
+}
+

@@ -2,6 +2,7 @@ import type { Response } from "express";
 import bcrypt from "bcryptjs";
 import type { AuthenticatedRequest } from "../../shared/middleware/userAuth.js";
 import { prisma } from "../../shared/db.js";
+import { cashfreeCreatePgOrder, normalizeIndianMobile10 } from "../../shared/cashfreePg.js";
 
 function packageNameByAmount(amount: number) {
   if (amount === 2500) return "Bronze";
@@ -267,6 +268,95 @@ async function levelMlm(regNo: string, amount: number, sourceId: number) {
     }
     currentReg = sponsor;
   }
+}
+
+function newCashfreeMerchantOrderId(): string {
+  return `EXF${Date.now()}${Math.floor(Math.random() * 1_000_000)}`.slice(0, 45);
+}
+
+async function fulfillPackagePurchaseFromCashfree(regNo: string, meta: Record<string, unknown>, orderId: string) {
+  const amount = Number(meta.package_amount);
+  const gst = Number(meta.gst);
+  const myTotal = Number(meta.total_amount);
+  const sponsorMobileMeta = meta.sponsor_mobile != null && String(meta.sponsor_mobile).length > 0 ? String(meta.sponsor_mobile) : "";
+
+  const u = await prisma.user.findFirst({ where: { regNo }, select: { regNo: true, sponser_id: true } });
+  if (!u?.regNo) return;
+
+  if (String(u.sponser_id ?? "0") === "0") {
+    if (!sponsorMobileMeta) return;
+    const sponsor = await prisma.user.findFirst({
+      where: { mobile: sponsorMobileMeta, NOT: { regNo } },
+      select: { regNo: true }
+    });
+    if (!sponsor) return;
+    await prisma.user.updateMany({ where: { regNo }, data: { sponser_id: sponsor.regNo } });
+  }
+
+  const exists = await prisma.package.findFirst({ where: { regNo, amount } });
+  if (exists) return;
+
+  const pkgInsert = await prisma.package.create({
+    data: {
+      regNo,
+      amount,
+      payment_method: "Cashfree",
+      gst,
+      total_amount: myTotal,
+      status: "approved",
+      txn: orderId
+    }
+  });
+  await prisma.perday.create({ data: { regNo, amount } });
+  await levelMlm(regNo, amount, pkgInsert.id);
+}
+
+async function fulfillCibilFromCashfree(regNo: string, meta: Record<string, unknown>) {
+  const pending = await prisma.cibileReportRequest.findFirst({
+    where: { regNo, status: "pending" },
+    select: { id: true }
+  });
+  if (pending) return;
+
+  const appId = `CIBIL${Date.now()}`;
+  await prisma.cibileReportRequest.create({
+    data: {
+      regNo,
+      name: String(meta.name),
+      m_name: (meta.m_name as string | null) ?? null,
+      l_name: (meta.l_name as string | null) ?? null,
+      mobile: String(meta.mobile),
+      pan_number: String(meta.pan_number),
+      status: "pending",
+      amount: Number(meta.amount),
+      gst: Number(meta.gst),
+      total_amount: Number(meta.total_amount),
+      application_id: appId
+    }
+  });
+}
+
+async function fulfillLoanFromCashfree(regNo: string, meta: Record<string, unknown>) {
+  const pending = await prisma.loan.findFirst({ where: { regNo, status: "pending" }, select: { id: true } });
+  if (pending) return;
+
+  const totalFee = 590;
+  await prisma.loan.create({
+    data: {
+      regNo,
+      name: String(meta.name),
+      mobile: String(meta.mobile),
+      pan_number: String(meta.pan_number),
+      amount: 0,
+      loan_type: String(meta.loan_type),
+      status: "pending",
+      l_name: (meta.l_name as string | null) ?? null,
+      m_name: (meta.m_name as string | null) ?? null,
+      fee: 500,
+      fee_gst: 90,
+      total_fee: totalFee
+    }
+  });
 }
 
 export async function purchasePackage(req: AuthenticatedRequest, res: Response) {
@@ -603,28 +693,299 @@ export async function cibilHistory(req: AuthenticatedRequest, res: Response) {
   return res.json({ status: true, data: rows });
 }
 
+export async function createCashfreeSession(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) return res.status(401).json({ status: false, message: "Invalid token" });
+
+  const profilePhone = normalizeIndianMobile10(user.mobile);
+  if (!profilePhone) {
+    return res.status(422).json({
+      status: false,
+      message: "Your profile needs a valid 10-digit mobile number for online payments."
+    });
+  }
+
+  const body = req.body as Record<string, unknown>;
+  const purpose = String(body.purpose ?? "");
+  const orderId = newCashfreeMerchantOrderId();
+
+  try {
+    if (purpose === "wallet_deposit") {
+      const amount = Number(body.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return res.status(422).json({ status: false, v_errors: { amount: ["Amount is required."] } });
+      }
+      const setting = ((await prisma.setting.findFirst()) ?? {}) as Record<string, number>;
+      const oldDeposits = (await prisma.bank.findMany({ where: { regNo: user.regNo } })).reduce(
+        (a, b) => a + Number(b.amount ?? 0),
+        0
+      );
+      const limit = Number(setting.deposit_limit ?? 0);
+      const chargeable = oldDeposits < limit ? Math.max(oldDeposits + amount - limit, 0) : amount;
+      const adminCharge = Number((((chargeable * Number(setting.deposit_admin_charge ?? 0)) / 100) || 0).toFixed(2));
+      const gst = Number((((adminCharge * Number(setting.deposit_gst ?? 0)) / 100) || 0).toFixed(2));
+      const total = Number((amount + adminCharge + gst).toFixed(2));
+
+      const cf = await cashfreeCreatePgOrder({
+        orderId,
+        orderAmount: total,
+        customerId: user.regNo,
+        customerPhone10: profilePhone,
+        orderNote: `Wallet deposit ${amount}`
+      });
+
+      await prisma.deposit.create({
+        data: {
+          regNo: user.regNo,
+          amount,
+          payment_method: "Cashfree",
+          status: "pending",
+          txn: orderId,
+          total_amount: total,
+          gst,
+          admin_charge: adminCharge
+        }
+      });
+
+      return res.json({
+        status: true,
+        order_id: cf.order_id,
+        payment_session_id: cf.payment_session_id,
+        order_amount: total
+      });
+    }
+
+    if (purpose === "package_purchase") {
+      const amount = Number(body.amount);
+      if (!amount) {
+        return res.status(422).json({ status: false, v_errors: { amount: ["Validation failed"] } });
+      }
+
+      if (String(user.sponser_id ?? "0") === "0") {
+        const sponsorMobile = String(body.sponser_id ?? "");
+        if (!sponsorMobile) return res.status(500).json({ status: false, message: "sponsor not found." });
+        const sponsor = await prisma.user.findFirst({
+          where: { mobile: sponsorMobile, NOT: { regNo: user.regNo } },
+          select: { regNo: true }
+        });
+        if (!sponsor) return res.status(500).json({ status: false, message: "sponsor not found." });
+      }
+
+      const exists = await prisma.package.findFirst({ where: { regNo: user.regNo, amount } });
+      if (exists) return res.status(500).json({ status: false, message: "This package is already purchased." });
+
+      const setting = ((await prisma.setting.findFirst()) ?? {}) as Record<string, number>;
+      const gst = Number((((amount * Number(setting.deposit_gst ?? 0)) / 100) || 0).toFixed(2));
+      const myTotal = Number((amount + gst).toFixed(2));
+
+      const sponsorMobileForMeta =
+        String(user.sponser_id ?? "0") === "0" ? String(body.sponser_id ?? "") : "";
+
+      const cf = await cashfreeCreatePgOrder({
+        orderId,
+        orderAmount: myTotal,
+        customerId: user.regNo,
+        customerPhone10: profilePhone,
+        orderNote: `Package ${amount}`
+      });
+
+      await prisma.cashfreeOrder.create({
+        data: {
+          order_id: orderId,
+          reg_no: user.regNo,
+          purpose: "package_purchase",
+          order_amount: myTotal,
+          meta: {
+            package_amount: amount,
+            gst,
+            total_amount: myTotal,
+            ...(sponsorMobileForMeta ? { sponsor_mobile: sponsorMobileForMeta } : {})
+          }
+        }
+      });
+
+      return res.json({
+        status: true,
+        order_id: cf.order_id,
+        payment_session_id: cf.payment_session_id,
+        order_amount: myTotal
+      });
+    }
+
+    if (purpose === "cibil_report") {
+      if (!body.name || !body.pan_number || !body.mobile) {
+        return res.status(422).json({ status: false, errors: { message: "Validation failed" } });
+      }
+      const pending = await prisma.cibileReportRequest.findFirst({
+        where: { regNo: user.regNo, status: "pending" },
+        select: { id: true }
+      });
+      if (pending) return res.status(409).json({ status: false, message: "Previous request still pending" });
+
+      const custPhone = normalizeIndianMobile10(String(body.mobile));
+      if (!custPhone) {
+        return res.status(422).json({ status: false, message: "Invalid mobile for CIBIL form" });
+      }
+
+      const calculatedGst = 15.25;
+      const calculatedTotal = 100;
+      const baseAmount = 84.75;
+
+      const cf = await cashfreeCreatePgOrder({
+        orderId,
+        orderAmount: calculatedTotal,
+        customerId: user.regNo,
+        customerPhone10: custPhone,
+        customerName: String(body.name),
+        orderNote: "CIBIL report"
+      });
+
+      await prisma.cashfreeOrder.create({
+        data: {
+          order_id: orderId,
+          reg_no: user.regNo,
+          purpose: "cibil_report",
+          order_amount: calculatedTotal,
+          meta: {
+            name: String(body.name),
+            m_name: (body.m_name as string | null) ?? null,
+            l_name: (body.l_name as string | null) ?? null,
+            mobile: String(body.mobile),
+            pan_number: String(body.pan_number),
+            amount: baseAmount,
+            gst: calculatedGst,
+            total_amount: calculatedTotal
+          }
+        }
+      });
+
+      return res.json({
+        status: true,
+        order_id: cf.order_id,
+        payment_session_id: cf.payment_session_id,
+        order_amount: calculatedTotal
+      });
+    }
+
+    if (purpose === "loan_service") {
+      if (!body.name || !body.mobile || !body.pan_number || !body.loan_type) {
+        return res.status(422).json({ status: false, errors: { message: "Validation failed" } });
+      }
+      const pending = await prisma.loan.findFirst({
+        where: { regNo: user.regNo, status: "pending" },
+        select: { id: true }
+      });
+      if (pending) {
+        return res.status(409).json({ status: false, message: "Your previous loan request is still pending" });
+      }
+
+      const custPhone = normalizeIndianMobile10(String(body.mobile));
+      if (!custPhone) {
+        return res.status(422).json({ status: false, message: "Invalid mobile on loan form" });
+      }
+
+      const totalFee = 590;
+
+      const cf = await cashfreeCreatePgOrder({
+        orderId,
+        orderAmount: totalFee,
+        customerId: user.regNo,
+        customerPhone10: custPhone,
+        customerName: String(body.name),
+        orderNote: "Loan service CIBIL fee"
+      });
+
+      await prisma.cashfreeOrder.create({
+        data: {
+          order_id: orderId,
+          reg_no: user.regNo,
+          purpose: "loan_service",
+          order_amount: totalFee,
+          meta: {
+            name: String(body.name),
+            mobile: String(body.mobile),
+            pan_number: String(body.pan_number),
+            loan_type: String(body.loan_type),
+            l_name: (body.l_name as string | null) ?? null,
+            m_name: (body.m_name as string | null) ?? null
+          }
+        }
+      });
+
+      return res.json({
+        status: true,
+        order_id: cf.order_id,
+        payment_session_id: cf.payment_session_id,
+        order_amount: totalFee
+      });
+    }
+
+    return res.status(422).json({ status: false, message: "Unknown payment purpose" });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Payment session failed";
+    return res.status(502).json({ status: false, message: msg });
+  }
+}
+
 export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) {
   const payload = req.body as Record<string, any>;
-  const orderId = payload?.data?.order?.order_id;
-  const orderStatus = payload?.data?.order?.order_status;
+  const orderId = String(payload?.data?.order?.order_id ?? "");
+  const orderStatus = payload?.data?.order?.order_status as string | undefined;
   const cfPaymentId = payload?.data?.payment?.cf_payment_id ?? null;
   if (!orderId) return res.json({ ok: false });
 
   const deposit = await prisma.deposit.findFirst({ where: { txn: orderId } });
-  if (!deposit) return res.json({ ok: false });
-  if (deposit.status === "success") return res.json({ ok: true });
+  if (deposit) {
+    if ((deposit.status ?? "") === "approved") return res.json({ ok: true });
+
+    if (orderStatus === "PAID") {
+      await prisma.deposit.update({
+        where: { id: deposit.id },
+        data: { status: "approved", cf_payment_id: cfPaymentId ?? undefined }
+      });
+      const reg = deposit.regNo;
+      if (reg) {
+        await prisma.bank.create({
+          data: {
+            regNo: reg,
+            amount: Number(deposit.amount ?? 0),
+            comment: "deposit",
+            txn_type: "credit"
+          }
+        });
+      }
+    } else if (orderStatus && orderStatus !== "ACTIVE") {
+      await prisma.deposit.update({ where: { id: deposit.id }, data: { status: "rejected" } });
+    }
+    return res.json({ ok: true });
+  }
+
+  const cfRow = await prisma.cashfreeOrder.findUnique({ where: { order_id: orderId } });
+  if (!cfRow) return res.json({ ok: false });
+  if (cfRow.status === "paid") return res.json({ ok: true });
 
   if (orderStatus === "PAID") {
-    await prisma.deposit.update({
-      where: { id: deposit.id },
-      data: { status: "approved", cf_payment_id: cfPaymentId }
+    const meta = (cfRow.meta ?? {}) as Record<string, unknown>;
+    try {
+      if (cfRow.purpose === "package_purchase") {
+        await fulfillPackagePurchaseFromCashfree(cfRow.reg_no, meta, orderId);
+      } else if (cfRow.purpose === "cibil_report") {
+        await fulfillCibilFromCashfree(cfRow.reg_no, meta);
+      } else if (cfRow.purpose === "loan_service") {
+        await fulfillLoanFromCashfree(cfRow.reg_no, meta);
+      }
+    } catch (e) {
+      console.error("cashfreeWebhook fulfill error", e);
+      return res.json({ ok: false });
+    }
+    await prisma.cashfreeOrder.update({
+      where: { id: cfRow.id },
+      data: { status: "paid", cf_payment_id: cfPaymentId ?? undefined }
     });
-    await prisma.bank.create({
-      data: { regNo: deposit.regNo, amount: Number(deposit.amount ?? 0), comment: "deposit", txn_type: "credit" }
-    });
-  } else {
-    await prisma.deposit.update({ where: { id: deposit.id }, data: { status: "rejected" } });
+  } else if (orderStatus && orderStatus !== "ACTIVE") {
+    await prisma.cashfreeOrder.update({ where: { id: cfRow.id }, data: { status: "failed" } });
   }
+
   return res.json({ ok: true });
 }
 
