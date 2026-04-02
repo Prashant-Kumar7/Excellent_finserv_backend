@@ -931,14 +931,27 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
   const payload = req.body as Record<string, any>;
   const orderId = String(payload?.data?.order?.order_id ?? "");
   const orderStatus = payload?.data?.order?.order_status as string | undefined;
+  const paymentStatus = String(payload?.data?.payment?.payment_status ?? "");
+  const webhookType = String(payload?.type ?? "");
   const cfPaymentId = payload?.data?.payment?.cf_payment_id ?? null;
   if (!orderId) return res.json({ ok: false });
+
+  // Cashfree PG webhooks (2025-01-01) use data.payment.payment_status === "SUCCESS", not order.order_status "PAID".
+  const isPaymentSuccess =
+    orderStatus === "PAID" ||
+    paymentStatus === "SUCCESS" ||
+    webhookType === "PAYMENT_SUCCESS_WEBHOOK";
+  const isPaymentFailed =
+    paymentStatus === "FAILED" ||
+    webhookType === "PAYMENT_FAILED_WEBHOOK" ||
+    paymentStatus === "USER_DROPPED" ||
+    webhookType === "PAYMENT_USER_DROPPED_WEBHOOK";
 
   const deposit = await prisma.deposit.findFirst({ where: { txn: orderId } });
   if (deposit) {
     if ((deposit.status ?? "") === "approved") return res.json({ ok: true });
 
-    if (orderStatus === "PAID") {
+    if (isPaymentSuccess) {
       await prisma.deposit.update({
         where: { id: deposit.id },
         data: { status: "approved", cf_payment_id: cfPaymentId ?? undefined }
@@ -954,7 +967,7 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
           }
         });
       }
-    } else if (orderStatus && orderStatus !== "ACTIVE") {
+    } else if (isPaymentFailed || (orderStatus && orderStatus !== "ACTIVE")) {
       await prisma.deposit.update({ where: { id: deposit.id }, data: { status: "rejected" } });
     }
     return res.json({ ok: true });
@@ -964,7 +977,7 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
   if (!cfRow) return res.json({ ok: false });
   if (cfRow.status === "paid") return res.json({ ok: true });
 
-  if (orderStatus === "PAID") {
+  if (isPaymentSuccess) {
     const meta = (cfRow.meta ?? {}) as Record<string, unknown>;
     try {
       if (cfRow.purpose === "package_purchase") {
@@ -982,7 +995,7 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
       where: { id: cfRow.id },
       data: { status: "paid", cf_payment_id: cfPaymentId ?? undefined }
     });
-  } else if (orderStatus && orderStatus !== "ACTIVE") {
+  } else if (isPaymentFailed || (orderStatus && orderStatus !== "ACTIVE")) {
     await prisma.cashfreeOrder.update({ where: { id: cfRow.id }, data: { status: "failed" } });
   }
 
