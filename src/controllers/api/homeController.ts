@@ -18,6 +18,35 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
   }
 
   const regNo = user.regNo;
+  const currentUser = await prisma.user.findFirst({
+    where: { id: user.id },
+    select: {
+      id: true,
+      name: true,
+      last_name: true,
+      mobile: true,
+      email: true,
+      email_verified_at: true,
+      created_at: true,
+      updated_at: true,
+      sponser_id: true,
+      regNo: true,
+      user_image: true,
+      aadhar_number: true,
+      pan_number: true,
+      account_number: true,
+      bank_name: true,
+      ifsc: true,
+      upi_id: true,
+      aadhar_front: true,
+      aadhar_back: true,
+      pan_image: true,
+      kyc_status: true
+    }
+  });
+  if (!currentUser) {
+    return res.status(404).json({ status: "done", message: "User Not found." });
+  }
   const [
     bankRows,
     walletRows,
@@ -48,7 +77,7 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
 
   return res.json({
     status: "done",
-    user,
+    user: currentUser,
     bank_balance: sum(bankRows),
     income_balance: sum(walletRows),
     total_deposit: sum(bankRows),
