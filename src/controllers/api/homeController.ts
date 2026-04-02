@@ -26,21 +26,14 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
       last_name: true,
       mobile: true,
       email: true,
-      email_verified_at: true,
       created_at: true,
       updated_at: true,
       sponser_id: true,
       regNo: true,
-      user_image: true,
-      aadhar_number: true,
-      pan_number: true,
       account_number: true,
       bank_name: true,
       ifsc: true,
       upi_id: true,
-      aadhar_front: true,
-      aadhar_back: true,
-      pan_image: true,
       kyc_status: true
     }
   });
