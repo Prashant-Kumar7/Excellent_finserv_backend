@@ -32,8 +32,15 @@ function tokenResponse(user: UserRow) {
 
 async function createOtp(mobile: string, action: "register" | "login" | "forget"): Promise<number> {
   const otp = Math.floor(1000 + Math.random() * 9000);
+  const now = new Date();
   await prisma.otp.create({
-    data: { mobile, otp: String(otp), action }
+    data: {
+      mobile,
+      otp: String(otp),
+      action,
+      created_at: now,
+      updated_at: now
+    }
   });
   return otp;
 }
