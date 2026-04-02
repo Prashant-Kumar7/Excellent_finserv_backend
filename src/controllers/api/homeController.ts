@@ -336,9 +336,12 @@ async function fulfillCibilFromCashfree(regNo: string, meta: Record<string, unkn
   });
 }
 
-async function fulfillLoanFromCashfree(regNo: string, meta: Record<string, unknown>) {
-  const pending = await prisma.loan.findFirst({ where: { regNo, status: "pending" }, select: { id: true } });
-  if (pending) return;
+async function fulfillLoanFromCashfree(regNo: string, meta: Record<string, unknown>, cashfreeOrderId: string) {
+  const existing = await prisma.loan.findFirst({
+    where: { regNo, remarks: { contains: cashfreeOrderId } },
+    select: { id: true }
+  });
+  if (existing) return;
 
   const totalFee = 590;
   await prisma.loan.create({
@@ -354,7 +357,8 @@ async function fulfillLoanFromCashfree(regNo: string, meta: Record<string, unkno
       m_name: (meta.m_name as string | null) ?? null,
       fee: 500,
       fee_gst: 90,
-      total_fee: totalFee
+      total_fee: totalFee,
+      remarks: `cashfree_order:${cashfreeOrderId}`
     }
   });
 }
@@ -733,6 +737,7 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
         customerPhone10: profilePhone,
         orderNote: `Wallet deposit ${amount}`
       });
+      const cfOrderId = cf.order_id;
 
       await prisma.deposit.create({
         data: {
@@ -740,7 +745,7 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
           amount,
           payment_method: "Cashfree",
           status: "pending",
-          txn: orderId,
+          txn: cfOrderId,
           total_amount: total,
           gst,
           admin_charge: adminCharge
@@ -788,10 +793,11 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
         customerPhone10: profilePhone,
         orderNote: `Package ${amount}`
       });
+      const cfOrderId = cf.order_id;
 
       await prisma.cashfreeOrder.create({
         data: {
-          order_id: orderId,
+          order_id: cfOrderId,
           reg_no: user.regNo,
           purpose: "package_purchase",
           order_amount: myTotal,
@@ -839,10 +845,11 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
         customerName: String(body.name),
         orderNote: "CIBIL report"
       });
+      const cfOrderId = cf.order_id;
 
       await prisma.cashfreeOrder.create({
         data: {
-          order_id: orderId,
+          order_id: cfOrderId,
           reg_no: user.regNo,
           purpose: "cibil_report",
           order_amount: calculatedTotal,
@@ -894,10 +901,11 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
         customerName: String(body.name),
         orderNote: "Loan service CIBIL fee"
       });
+      const cfOrderId = cf.order_id;
 
       await prisma.cashfreeOrder.create({
         data: {
-          order_id: orderId,
+          order_id: cfOrderId,
           reg_no: user.regNo,
           purpose: "loan_service",
           order_amount: totalFee,
@@ -985,7 +993,7 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
       } else if (cfRow.purpose === "cibil_report") {
         await fulfillCibilFromCashfree(cfRow.reg_no, meta);
       } else if (cfRow.purpose === "loan_service") {
-        await fulfillLoanFromCashfree(cfRow.reg_no, meta);
+        await fulfillLoanFromCashfree(cfRow.reg_no, meta, orderId);
       }
     } catch (e) {
       console.error("cashfreeWebhook fulfill error", e);
