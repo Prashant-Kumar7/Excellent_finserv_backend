@@ -1,4 +1,5 @@
 import express, { json, urlencoded } from "express";
+import type { Request } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
@@ -14,7 +15,13 @@ const multipart = multer();
 
 app.use(cors());
 app.use(cookieParser());
-app.use(json());
+app.use(
+  json({
+    verify: (req, _res, buf) => {
+      (req as Request & { rawBody?: string }).rawBody = buf.toString("utf8");
+    }
+  })
+);
 app.use(urlencoded({ extended: true }));
 // Flutter app posts FormData (multipart) even for text-only requests.
 app.use(multipart.any());

@@ -14,8 +14,11 @@ import {
   bankWalletWithdraw,
   bankHistory,
   bankWalletWithdrawCancel,
+  bankReversePennyDropStatus,
   cashfreeWebhook,
+  createBankReversePennyDrop,
   createCashfreeSession,
+  createKycDigilockerUrl,
   cibilHistory,
   cibilSubmit,
   coinWalletWithdraw,
@@ -25,6 +28,8 @@ import {
   deposit,
   deposit2,
   depositHistory,
+  digilockerDocument,
+  digilockerStatus,
   incomeWalletWithdraw,
   incomeWalletWithdrawCancel,
   insuranceHistory,
@@ -35,6 +40,7 @@ import {
   myTickets,
   purchasePackage,
   purchasePackageHistory,
+  secureIdWebhook,
   updatePassword,
   updateProfile,
   uploadProfileAvatar,
@@ -75,6 +81,7 @@ export const apiRouter = Router();
 
 // Cashfree webhook (no API key middleware in Laravel)
 apiRouter.post("/cashfree/webhook", cashfreeWebhook);
+apiRouter.post("/cashfree/secureid/webhook", secureIdWebhook);
 
 // All /user routes are behind globalapikey in Laravel
 const userRouter = Router();
@@ -124,6 +131,11 @@ protectedUserRouter.post("/coin_wallet_withdraw", coinWalletWithdraw);
 protectedUserRouter.get("/bank_wallet_withdraw_cancel", bankWalletWithdrawCancel);
 protectedUserRouter.get("/income_wallet_withdraw_cancel", incomeWalletWithdrawCancel);
 protectedUserRouter.post("/profile/update", updateProfile);
+protectedUserRouter.post("/kyc/digilocker/create-url", createKycDigilockerUrl);
+protectedUserRouter.get("/kyc/digilocker/status", digilockerStatus);
+protectedUserRouter.get("/kyc/digilocker/document/:documentType", digilockerDocument);
+protectedUserRouter.post("/kyc/bank/reverse-penny-drop/create", createBankReversePennyDrop);
+protectedUserRouter.get("/kyc/bank/reverse-penny-drop/status", bankReversePennyDropStatus);
 protectedUserRouter.post("/profile/avatar", uploadProfileAvatar);
 protectedUserRouter.post("/update-password", updatePassword);
 protectedUserRouter.post("/wishlist/add", wishlistAdd);

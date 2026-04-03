@@ -3,6 +3,14 @@ import bcrypt from "bcryptjs";
 import type { AuthenticatedRequest } from "../../shared/middleware/userAuth.js";
 import { prisma } from "../../shared/db.js";
 import { cashfreeCreatePgOrder, normalizeIndianMobile10 } from "../../shared/cashfreePg.js";
+import {
+  createDigilockerUrl,
+  createReversePennyDrop,
+  getDigilockerDocument,
+  getDigilockerStatus,
+  getReversePennyDropStatus,
+  verifySecureIdWebhookSignature
+} from "../../shared/cashfreeSecureId.js";
 import { signSupabaseAvatarUrl, uploadUserProfileImage } from "../../shared/profileImageUpload.js";
 
 function packageNameByAmount(amount: number) {
@@ -569,6 +577,34 @@ function multipartString(body: Request["body"], key: string): string | undefined
   return v.length ? v : undefined;
 }
 
+function regNoToken(raw: string): string {
+  return raw.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function kycDigilockerVerificationId(regNo: string): string {
+  return `DGL_${regNoToken(regNo)}_${Date.now()}`.slice(0, 50);
+}
+
+function bankRpdVerificationId(regNo: string): string {
+  return `RPD_${regNoToken(regNo)}_${Date.now()}`.slice(0, 50);
+}
+
+function parseRegNoFromVerificationId(verificationId: string): string | null {
+  const parts = verificationId.split("_");
+  if (parts.length < 3) return null;
+  return parts.slice(1, -1).join("_") || null;
+}
+
+type SecureIdWebhookPayload = {
+  event_type?: string;
+  data?: {
+    verification_id?: string;
+    status?: string;
+    ref_id?: string | number;
+    reference_id?: string | number;
+  };
+};
+
 export async function uploadProfileAvatar(req: AuthenticatedRequest, res: Response) {
   const user = req.user;
   if (!user) return res.status(401).json({ status: false, message: "Invalid or expired token" });
@@ -623,6 +659,9 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
     ifsc?: string | null;
     upi_id?: string | null;
     user_image?: string;
+    aadhar_front?: string;
+    aadhar_back?: string;
+    pan_image?: string;
     updated_at?: Date;
   } = { updated_at: new Date() };
 
@@ -669,6 +708,54 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
     }
   }
 
+  const aadharFront = files.find((f) => f.fieldname === "aadhar_front");
+  if (aadharFront?.buffer?.length) {
+    try {
+      data.aadhar_front = await uploadUserProfileImage(aadharFront.buffer, aadharFront.mimetype, `${user.regNo}_aadhaar_front`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "";
+      if (msg === "invalid_image_type") {
+        return res.status(422).json({ status: false, message: "Use JPEG, PNG, or WebP for Aadhaar front" });
+      }
+      if (msg === "image_too_large") {
+        return res.status(422).json({ status: false, message: "Aadhaar front too large (max 2MB)" });
+      }
+      return res.status(502).json({ status: false, message: "Aadhaar front upload failed" });
+    }
+  }
+
+  const aadharBack = files.find((f) => f.fieldname === "aadhar_back");
+  if (aadharBack?.buffer?.length) {
+    try {
+      data.aadhar_back = await uploadUserProfileImage(aadharBack.buffer, aadharBack.mimetype, `${user.regNo}_aadhaar_back`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "";
+      if (msg === "invalid_image_type") {
+        return res.status(422).json({ status: false, message: "Use JPEG, PNG, or WebP for Aadhaar back" });
+      }
+      if (msg === "image_too_large") {
+        return res.status(422).json({ status: false, message: "Aadhaar back too large (max 2MB)" });
+      }
+      return res.status(502).json({ status: false, message: "Aadhaar back upload failed" });
+    }
+  }
+
+  const panImage = files.find((f) => f.fieldname === "pan_image");
+  if (panImage?.buffer?.length) {
+    try {
+      data.pan_image = await uploadUserProfileImage(panImage.buffer, panImage.mimetype, `${user.regNo}_pan`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "";
+      if (msg === "invalid_image_type") {
+        return res.status(422).json({ status: false, message: "Use JPEG, PNG, or WebP for PAN image" });
+      }
+      if (msg === "image_too_large") {
+        return res.status(422).json({ status: false, message: "PAN image too large (max 2MB)" });
+      }
+      return res.status(502).json({ status: false, message: "PAN image upload failed" });
+    }
+  }
+
   const keys = Object.keys(data).filter((k) => k !== "updated_at");
   if (!keys.length) {
     delete data.updated_at;
@@ -680,6 +767,147 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
     data
   });
   return res.json({ status: true, message: "Profile updated successfully" });
+}
+
+export async function createKycDigilockerUrl(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) return res.status(401).json({ status: false, message: "Invalid token" });
+  try {
+    const verificationId = kycDigilockerVerificationId(user.regNo);
+    const redirectUrl = process.env.CASHFREE_SECUREID_DIGILOCKER_REDIRECT_URL;
+    const out = await createDigilockerUrl({
+      verificationId,
+      documents: ["AADHAAR", "PAN"],
+      userFlow: "signup",
+      ...(redirectUrl ? { redirectUrl } : {})
+    });
+    return res.json({ status: true, message: "Digilocker URL created", data: out });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Unable to create Digilocker URL";
+    return res.status(502).json({ status: false, message: msg });
+  }
+}
+
+export async function digilockerStatus(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) return res.status(401).json({ status: false, message: "Invalid token" });
+  const verificationId = String(req.query.verification_id ?? "");
+  const referenceId = String(req.query.reference_id ?? "");
+  if (!verificationId && !referenceId) {
+    return res.status(422).json({ status: false, message: "verification_id or reference_id is required" });
+  }
+  try {
+    const out = await getDigilockerStatus({
+      ...(verificationId ? { verificationId } : {}),
+      ...(referenceId ? { referenceId } : {})
+    });
+    return res.json({ status: true, data: out });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Unable to fetch Digilocker status";
+    return res.status(502).json({ status: false, message: msg });
+  }
+}
+
+export async function digilockerDocument(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) return res.status(401).json({ status: false, message: "Invalid token" });
+  const documentType = String(req.params.documentType ?? "").toUpperCase();
+  const verificationId = String(req.query.verification_id ?? "");
+  const referenceId = String(req.query.reference_id ?? "");
+  if (!["AADHAAR", "PAN", "DRIVING_LICENSE"].includes(documentType)) {
+    return res.status(422).json({ status: false, message: "Invalid document type" });
+  }
+  if (!verificationId && !referenceId) {
+    return res.status(422).json({ status: false, message: "verification_id or reference_id is required" });
+  }
+  try {
+    const out = await getDigilockerDocument({
+      documentType: documentType as "AADHAAR" | "PAN" | "DRIVING_LICENSE",
+      ...(verificationId ? { verificationId } : {}),
+      ...(referenceId ? { referenceId } : {})
+    });
+    return res.json({ status: true, data: out });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Unable to fetch Digilocker document";
+    return res.status(502).json({ status: false, message: msg });
+  }
+}
+
+export async function createBankReversePennyDrop(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) return res.status(401).json({ status: false, message: "Invalid token" });
+  const body = req.body as Record<string, unknown>;
+  const holderName = String(body.name ?? "").trim();
+  try {
+    const verificationId = bankRpdVerificationId(user.regNo);
+    const out = await createReversePennyDrop({
+      verificationId,
+      ...(holderName ? { name: holderName } : {})
+    });
+    return res.json({ status: true, message: "Reverse penny drop initiated", data: out });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Unable to initiate reverse penny drop";
+    return res.status(502).json({ status: false, message: msg });
+  }
+}
+
+export async function bankReversePennyDropStatus(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) return res.status(401).json({ status: false, message: "Invalid token" });
+  const verificationId = String(req.query.verification_id ?? "");
+  const refId = String(req.query.ref_id ?? "");
+  if (!verificationId && !refId) {
+    return res.status(422).json({ status: false, message: "verification_id or ref_id is required" });
+  }
+  try {
+    const out = await getReversePennyDropStatus({
+      ...(verificationId ? { verificationId } : {}),
+      ...(refId ? { refId } : {})
+    });
+    if (String(out.status ?? "") === "SUCCESS") {
+      const accountNo = String(out.bank_account ?? "");
+      const ifsc = String(out.ifsc ?? "");
+      if (accountNo || ifsc) {
+        await prisma.user.updateMany({
+          where: { regNo: user.regNo },
+          data: {
+            ...(accountNo ? { account_number: accountNo } : {}),
+            ...(ifsc ? { ifsc } : {}),
+            updated_at: new Date()
+          }
+        });
+      }
+    }
+    return res.json({ status: true, data: out });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Unable to fetch reverse penny drop status";
+    return res.status(502).json({ status: false, message: msg });
+  }
+}
+
+export async function secureIdWebhook(req: Request, res: Response) {
+  const rawBody = (req as Request & { rawBody?: string }).rawBody ?? JSON.stringify(req.body ?? {});
+  const signature = String(req.headers["x-webhook-signature"] ?? "");
+  const timestamp = String(req.headers["x-webhook-timestamp"] ?? "");
+  if (signature && timestamp && !verifySecureIdWebhookSignature(rawBody, timestamp, signature)) {
+    return res.status(401).json({ ok: false, message: "Invalid webhook signature" });
+  }
+
+  const payload = (req.body ?? {}) as SecureIdWebhookPayload;
+  const eventType = String(payload.event_type ?? "");
+  const verificationId = String(payload.data?.verification_id ?? "");
+  const regNo = verificationId ? parseRegNoFromVerificationId(verificationId) : null;
+  if (!regNo) return res.json({ ok: true });
+
+  if (eventType.startsWith("DIGILOCKER_VERIFICATION_")) {
+    const status = String(payload.data?.status ?? "");
+    if (status === "AUTHENTICATED") {
+      await prisma.user.updateMany({ where: { regNo }, data: { kyc_status: 1, updated_at: new Date() } });
+    } else if (["FAILURE", "CONSENT_DENIED", "EXPIRED"].includes(status)) {
+      await prisma.user.updateMany({ where: { regNo }, data: { kyc_status: 2, updated_at: new Date() } });
+    }
+  }
+  return res.json({ ok: true });
 }
 
 export async function loanRequest(req: AuthenticatedRequest, res: Response) {
