@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import type { AuthenticatedRequest } from "../../shared/middleware/userAuth.js";
 import { prisma } from "../../shared/db.js";
 import { cashfreeCreatePgOrder, normalizeIndianMobile10 } from "../../shared/cashfreePg.js";
-import { uploadUserProfileImage } from "../../shared/profileImageUpload.js";
+import { signSupabaseAvatarUrl, uploadUserProfileImage } from "../../shared/profileImageUpload.js";
 
 function packageNameByAmount(amount: number) {
   if (amount === 2500) return "Bronze";
@@ -47,6 +47,12 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
   if (!currentUser) {
     return res.status(404).json({ status: "done", message: "User Not found." });
   }
+
+  const userForClient = {
+    ...currentUser,
+    user_image: await signSupabaseAvatarUrl(currentUser.user_image ?? undefined)
+  };
+
   const [
     bankRows,
     walletRows,
@@ -77,7 +83,7 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
 
   return res.json({
     status: "done",
-    user: currentUser,
+    user: userForClient,
     bank_balance: sum(bankRows),
     income_balance: sum(walletRows),
     total_deposit: sum(bankRows),
@@ -154,8 +160,10 @@ export async function myDirects(req: AuthenticatedRequest, res: Response) {
     directs.map(async (u) => {
       const pkg = await prisma.perday.findFirst({ where: { regNo: u.regNo ?? "" }, orderBy: { id: "desc" } });
       const packageAmount = Number(pkg?.amount ?? 0);
+      const signedImage = await signSupabaseAvatarUrl(u.user_image ?? undefined);
       return {
         ...u,
+        user_image: signedImage ?? u.user_image,
         status: pkg ? "Active" : "Inactive",
         package_amount: packageAmount,
         package_name: packageNameByAmount(Number(packageAmount))
@@ -577,10 +585,11 @@ export async function uploadProfileAvatar(req: AuthenticatedRequest, res: Respon
       where: { regNo: user.regNo },
       data: { user_image: publicUrl, updated_at: new Date() }
     });
+    const clientUrl = (await signSupabaseAvatarUrl(publicUrl)) ?? publicUrl;
     return res.json({
       status: true,
       message: "Profile photo updated",
-      user_image: publicUrl
+      user_image: clientUrl
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "";
@@ -592,7 +601,8 @@ export async function uploadProfileAvatar(req: AuthenticatedRequest, res: Respon
     }
     // eslint-disable-next-line no-console
     console.error("uploadProfileAvatar", e);
-    return res.status(502).json({ status: false, message: "Upload failed" });
+    const detail = e instanceof Error ? e.message : "Upload failed";
+    return res.status(502).json({ status: false, message: detail });
   }
 }
 
@@ -654,7 +664,8 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
       }
       // eslint-disable-next-line no-console
       console.error("updateProfile user_image", e);
-      return res.status(502).json({ status: false, message: "Profile photo upload failed" });
+      const detail = e instanceof Error ? e.message : "Profile photo upload failed";
+      return res.status(502).json({ status: false, message: detail });
     }
   }
 
