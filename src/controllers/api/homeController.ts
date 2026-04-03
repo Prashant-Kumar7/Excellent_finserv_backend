@@ -1051,6 +1051,7 @@ export async function cibilHistory(req: AuthenticatedRequest, res: Response) {
 export async function createCashfreeSession(req: AuthenticatedRequest, res: Response) {
   const user = req.user;
   if (!user) return res.status(401).json({ status: false, message: "Invalid token" });
+  const cashfreeEnv = (process.env.CASHFREE_ENV ?? "SANDBOX").toUpperCase();
 
   const profilePhone = normalizeIndianMobile10(user.mobile);
   if (!profilePhone) {
@@ -1107,7 +1108,8 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
         status: true,
         order_id: cf.order_id,
         payment_session_id: cf.payment_session_id,
-        order_amount: total
+        order_amount: total,
+        cashfree_env: cashfreeEnv
       });
     }
 
@@ -1165,7 +1167,8 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
         status: true,
         order_id: cf.order_id,
         payment_session_id: cf.payment_session_id,
-        order_amount: myTotal
+        order_amount: myTotal,
+        cashfree_env: cashfreeEnv
       });
     }
 
@@ -1221,7 +1224,8 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
         status: true,
         order_id: cf.order_id,
         payment_session_id: cf.payment_session_id,
-        order_amount: calculatedTotal
+        order_amount: calculatedTotal,
+        cashfree_env: cashfreeEnv
       });
     }
 
@@ -1275,7 +1279,8 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
         status: true,
         order_id: cf.order_id,
         payment_session_id: cf.payment_session_id,
-        order_amount: totalFee
+        order_amount: totalFee,
+        cashfree_env: cashfreeEnv
       });
     }
 
