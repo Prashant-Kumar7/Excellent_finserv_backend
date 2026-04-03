@@ -20,6 +20,12 @@ model User {
   ifsc        String?
   upi_id      String?
   account_number String?
+  user_image     String?
+  aadhar_number  String?
+  pan_number     String?
+  aadhar_front   String?
+  aadhar_back    String?
+  pan_image      String?
   buyer      Int?
   seller     Int?
   status     Int?

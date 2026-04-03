@@ -1,8 +1,9 @@
-import type { Response } from "express";
+import type { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import type { AuthenticatedRequest } from "../../shared/middleware/userAuth.js";
 import { prisma } from "../../shared/db.js";
 import { cashfreeCreatePgOrder, normalizeIndianMobile10 } from "../../shared/cashfreePg.js";
+import { uploadUserProfileImage } from "../../shared/profileImageUpload.js";
 
 function packageNameByAmount(amount: number) {
   if (amount === 2500) return "Bronze";
@@ -34,7 +35,13 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
       bank_name: true,
       ifsc: true,
       upi_id: true,
-      kyc_status: true
+      kyc_status: true,
+      user_image: true,
+      aadhar_number: true,
+      pan_number: true,
+      aadhar_front: true,
+      aadhar_back: true,
+      pan_image: true
     }
   });
   if (!currentUser) {
@@ -546,37 +553,120 @@ export async function updatePassword(req: AuthenticatedRequest, res: Response) {
   return res.json({ status: true, message: "Password updated successfully" });
 }
 
+function multipartString(body: Request["body"], key: string): string | undefined {
+  const raw = body?.[key];
+  if (raw == null) return undefined;
+  const s = Array.isArray(raw) ? raw[0] : raw;
+  const v = String(s).trim();
+  return v.length ? v : undefined;
+}
+
+export async function uploadProfileAvatar(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) return res.status(401).json({ status: false, message: "Invalid or expired token" });
+
+  const files = req.files as Express.Multer.File[] | undefined;
+  const file = files?.find((f) => f.fieldname === "user_image");
+  if (!file?.buffer?.length) {
+    return res.status(422).json({ status: false, message: "Image file required" });
+  }
+
+  try {
+    const publicUrl = await uploadUserProfileImage(file.buffer, file.mimetype, user.regNo);
+    await prisma.user.updateMany({
+      where: { regNo: user.regNo },
+      data: { user_image: publicUrl, updated_at: new Date() }
+    });
+    return res.json({
+      status: true,
+      message: "Profile photo updated",
+      user_image: publicUrl
+    });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "";
+    if (msg === "invalid_image_type") {
+      return res.status(422).json({ status: false, message: "Use JPEG, PNG, or WebP" });
+    }
+    if (msg === "image_too_large") {
+      return res.status(422).json({ status: false, message: "Image too large (max 2MB)" });
+    }
+    // eslint-disable-next-line no-console
+    console.error("uploadProfileAvatar", e);
+    return res.status(502).json({ status: false, message: "Upload failed" });
+  }
+}
+
 export async function updateProfile(req: AuthenticatedRequest, res: Response) {
   const user = req.user;
   if (!user) return res.status(401).json({ status: false, message: "Invalid or expired token" });
-  const body = req.body as Record<string, unknown>;
-  const fields = [
-    "name",
-    "email",
-    "aadhar_number",
-    "pan_number",
-    "account_number",
-    "bank_name",
-    "ifsc",
-    "upi_id",
-    "aadhar_front",
-    "aadhar_back",
-    "pan_image",
-    "user_image"
-  ];
-  const set: string[] = [];
-  const vals: unknown[] = [];
-  for (const f of fields) {
-    if (f in body) {
-      set.push(`${f} = ?`);
-      vals.push(body[f]);
+
+  const body = req.body as Request["body"];
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+
+  const data: {
+    name?: string;
+    email?: string | null;
+    aadhar_number?: string | null;
+    pan_number?: string | null;
+    account_number?: string | null;
+    bank_name?: string | null;
+    ifsc?: string | null;
+    upi_id?: string | null;
+    user_image?: string;
+    updated_at?: Date;
+  } = { updated_at: new Date() };
+
+  const name = multipartString(body, "name");
+  if (name !== undefined) data.name = name;
+
+  const email = multipartString(body, "email");
+  if (email !== undefined) data.email = email;
+
+  const aadhar = multipartString(body, "aadhar_number");
+  if (aadhar !== undefined) data.aadhar_number = aadhar;
+
+  const pan = multipartString(body, "pan_number");
+  if (pan !== undefined) data.pan_number = pan;
+
+  const accountNumber = multipartString(body, "account_number");
+  if (accountNumber !== undefined) data.account_number = accountNumber;
+
+  const bankName = multipartString(body, "bank_name");
+  if (bankName !== undefined) data.bank_name = bankName;
+
+  const ifsc = multipartString(body, "ifsc");
+  if (ifsc !== undefined) data.ifsc = ifsc;
+
+  const upi = multipartString(body, "upi_id");
+  if (upi !== undefined) data.upi_id = upi;
+
+  const userImage = files.find((f) => f.fieldname === "user_image");
+  if (userImage?.buffer?.length) {
+    try {
+      data.user_image = await uploadUserProfileImage(userImage.buffer, userImage.mimetype, user.regNo);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "";
+      if (msg === "invalid_image_type") {
+        return res.status(422).json({ status: false, message: "Use JPEG, PNG, or WebP for profile photo" });
+      }
+      if (msg === "image_too_large") {
+        return res.status(422).json({ status: false, message: "Profile photo too large (max 2MB)" });
+      }
+      // eslint-disable-next-line no-console
+      console.error("updateProfile user_image", e);
+      return res.status(502).json({ status: false, message: "Profile photo upload failed" });
     }
   }
-  if (!set.length) return res.json({ status: true, message: "Profile updated successfully" });
-  vals.push(user.regNo);
+
+  const keys = Object.keys(data).filter((k) => k !== "updated_at");
+  if (!keys.length) {
+    delete data.updated_at;
+    return res.json({ status: true, message: "Profile updated successfully" });
+  }
+
   await prisma.user.updateMany({
     where: { regNo: user.regNo },
-    data: Object.fromEntries(set.map((x, i) => [x.split(" = ")[0], vals[i]]))
+    data
   });
   return res.json({ status: true, message: "Profile updated successfully" });
 }

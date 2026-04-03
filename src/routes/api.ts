@@ -37,6 +37,7 @@ import {
   purchasePackageHistory,
   updatePassword,
   updateProfile,
+  uploadProfileAvatar,
   walletHistory
 } from "../controllers/api/homeController.js";
 import {
@@ -123,6 +124,7 @@ protectedUserRouter.post("/coin_wallet_withdraw", coinWalletWithdraw);
 protectedUserRouter.get("/bank_wallet_withdraw_cancel", bankWalletWithdrawCancel);
 protectedUserRouter.get("/income_wallet_withdraw_cancel", incomeWalletWithdrawCancel);
 protectedUserRouter.post("/profile/update", updateProfile);
+protectedUserRouter.post("/profile/avatar", uploadProfileAvatar);
 protectedUserRouter.post("/update-password", updatePassword);
 protectedUserRouter.post("/wishlist/add", wishlistAdd);
 protectedUserRouter.post("/wishlist/remove", wishlistRemove);
