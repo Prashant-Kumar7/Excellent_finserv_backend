@@ -2,7 +2,7 @@ import type { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { prisma } from "../../shared/db.js";
 import { signUserToken } from "../../shared/auth/jwt.js";
-import { generateRandomExSixUniqueDigitRegNo } from "../../shared/regNo.js";
+import { generateRandomExSixUniqueDigitRegNo, isStoredMemberRegNo } from "../../shared/regNo.js";
 
 type UserRow = {
   id: number;
@@ -21,6 +21,23 @@ type OtpRow = {
 
 const MOBILE_REGEX = /^[6-9][0-9]{9}$/;
 const MOBILE_FLEX_REGEX = /^[0-9]{10,15}$/;
+
+/** Multer / multipart often yields string or single-element array per field. */
+function readFormField(body: Record<string, unknown> | undefined, key: string): string {
+  if (!body) return "";
+  const raw = body[key];
+  if (raw == null) return "";
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  if (first == null) return "";
+  return String(first).trim();
+}
+
+function normalizeLoginIdInput(raw: string): string {
+  return raw
+    .normalize("NFKC")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim();
+}
 
 function tokenResponse(user: UserRow) {
   return {
@@ -74,13 +91,35 @@ async function smsOtp(mobile: string, otp: number) {
 }
 
 export async function login(req: Request, res: Response) {
-  const { mobile, password } = req.body as { mobile?: string; password?: string };
-  if (!mobile || !MOBILE_FLEX_REGEX.test(mobile) || !password || password.length < 6) {
-    return res.status(422).json({ status: false, message: "Validation failed" });
+  const body = req.body as Record<string, unknown>;
+  const loginIdRaw =
+    readFormField(body, "mobile") ||
+    readFormField(body, "phone") ||
+    readFormField(body, "regNo") ||
+    readFormField(body, "reg_no");
+  const password = readFormField(body, "password");
+
+  const loginId = normalizeLoginIdInput(loginIdRaw);
+  if (!loginId || password.length < 6) {
+    return res.status(422).json({
+      status: false,
+      message: "Enter your mobile or User ID and a password of at least 6 characters."
+    });
+  }
+
+  const regKey = loginId.toUpperCase();
+  const byRegNo = isStoredMemberRegNo(regKey);
+  const byMobile = MOBILE_FLEX_REGEX.test(loginId) && /^\d+$/.test(loginId);
+
+  if (!byRegNo && !byMobile) {
+    return res.status(422).json({
+      status: false,
+      message: "Use a 10-digit mobile number or User ID (e.g. EX000000)."
+    });
   }
 
   const userRaw = await prisma.user.findFirst({
-    where: { mobile },
+    where: byRegNo ? { regNo: regKey } : { mobile: loginId },
     select: { id: true, mobile: true, password: true, regNo: true }
   });
   const user = userRaw
@@ -92,12 +131,16 @@ export async function login(req: Request, res: Response) {
       }
     : null;
   if (!user) {
-    return res.status(401).json({ status: false, message: "Invalid mobile number or password." });
+    return res
+      .status(401)
+      .json({ status: false, message: "Invalid mobile number, User ID, or password." });
   }
 
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) {
-    return res.status(401).json({ status: false, message: "Invalid mobile number or password." });
+    return res
+      .status(401)
+      .json({ status: false, message: "Invalid mobile number, User ID, or password." });
   }
 
   return res.json(tokenResponse(user));
