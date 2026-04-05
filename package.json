@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "migrate:regno": "npx tsx prisma/scripts/migrate-regno-to-ex.ts",
+    "migrate:regno:dry": "npx tsx prisma/scripts/migrate-regno-to-ex.ts --dry-run"
   },
   "keywords": [],
   "author": "",

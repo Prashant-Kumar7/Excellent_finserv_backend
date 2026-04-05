@@ -109,6 +109,175 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
   });
 }
 
+function ledgerNum(v: unknown): number {
+  const n = Number(v ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function ledgerTs(d: Date | null | undefined): string | null {
+  return d ? d.toISOString() : null;
+}
+
+/** Merged audit trail: income wallet, bank wallet, deposit requests, coin wallet, online (Cashfree) payments. */
+export async function buildFullTransactionLedger(regNo: string) {
+  const [wallets, banks, deposits, coins, cfOrders] = await Promise.all([
+    prisma.wallet.findMany({ where: { regNo } }),
+    prisma.bank.findMany({ where: { regNo } }),
+    prisma.deposit.findMany({ where: { regNo } }),
+    prisma.coin.findMany({ where: { regNo } }),
+    prisma.cashfreeOrder.findMany({ where: { reg_no: regNo }, orderBy: { id: "desc" } })
+  ]);
+
+  const rows: Record<string, unknown>[] = [];
+
+  for (const w of wallets) {
+    rows.push({
+      ledger_id: `w_${w.id}`,
+      ledger_source: "income_wallet",
+      id: w.id,
+      regNo: w.regNo,
+      amount: ledgerNum(w.amount),
+      comment: w.comment ?? "",
+      created_at: ledgerTs(w.created_at),
+      updated_at: ledgerTs(w.updated_at),
+      status: w.status ?? null,
+      txn_type: w.txn_type ?? null,
+      level: w.level ?? null,
+      gst: ledgerNum(w.gst),
+      tds: ledgerNum(w.tds),
+      amount_to_pay: ledgerNum(w.amount_to_pay),
+      service_charge: ledgerNum(w.service_charge),
+      source_id: w.source_id ?? null,
+      payment_method: null,
+      txn: null,
+      total_amount: null,
+      admin_charge: null,
+      deposit_principal: null
+    });
+  }
+
+  for (const b of banks) {
+    rows.push({
+      ledger_id: `b_${b.id}`,
+      ledger_source: "bank_wallet",
+      id: b.id,
+      regNo: b.regNo,
+      amount: ledgerNum(b.amount),
+      comment: b.comment ?? "",
+      created_at: ledgerTs(b.created_at),
+      updated_at: ledgerTs(b.updated_at),
+      status: b.status ?? null,
+      txn_type: b.txn_type ?? null,
+      level: null,
+      gst: null,
+      tds: null,
+      amount_to_pay: null,
+      service_charge: null,
+      source_id: null,
+      payment_method: null,
+      txn: null,
+      total_amount: null,
+      admin_charge: null,
+      deposit_principal: null
+    });
+  }
+
+  for (const d of deposits) {
+    const st = String(d.status ?? "").toLowerCase();
+    const showAmount = st === "rejected" ? 0 : ledgerNum(d.total_amount);
+    rows.push({
+      ledger_id: `d_${d.id}`,
+      ledger_source: "deposit",
+      id: d.id,
+      regNo: d.regNo,
+      amount: showAmount,
+      comment: `Wallet deposit (${d.status ?? "unknown"})`,
+      created_at: ledgerTs(d.created_at),
+      updated_at: ledgerTs(d.updated_at),
+      status: d.status ?? null,
+      txn_type: st === "approved" ? "credit" : st === "pending" ? "pending" : st === "rejected" ? "failed" : null,
+      level: null,
+      gst: ledgerNum(d.gst),
+      tds: null,
+      amount_to_pay: null,
+      service_charge: null,
+      source_id: null,
+      payment_method: d.payment_method ?? null,
+      txn: d.txn ?? null,
+      total_amount: ledgerNum(d.total_amount),
+      admin_charge: ledgerNum(d.admin_charge),
+      deposit_principal: ledgerNum(d.amount)
+    });
+  }
+
+  for (const c of coins) {
+    rows.push({
+      ledger_id: `c_${c.id}`,
+      ledger_source: "coin_wallet",
+      id: c.id,
+      regNo: c.regNo,
+      amount: ledgerNum(c.amount),
+      comment: c.comment ?? "",
+      created_at: ledgerTs(c.created_at),
+      updated_at: ledgerTs(c.updated_at),
+      status: null,
+      txn_type: null,
+      level: null,
+      gst: null,
+      tds: null,
+      amount_to_pay: null,
+      service_charge: null,
+      source_id: null,
+      payment_method: null,
+      txn: null,
+      total_amount: null,
+      admin_charge: null,
+      deposit_principal: null
+    });
+  }
+
+  const purposeLabel: Record<string, string> = {
+    package_purchase: "Package purchase (online)",
+    cibil_report: "CIBIL report (online)",
+    loan_service: "Loan service fee (online)"
+  };
+
+  for (const o of cfOrders) {
+    const paid = String(o.status ?? "").toLowerCase() === "paid";
+    rows.push({
+      ledger_id: `cf_${o.id}`,
+      ledger_source: "online_payment",
+      id: o.id,
+      regNo: o.reg_no,
+      amount: paid ? -ledgerNum(o.order_amount) : 0,
+      comment: purposeLabel[o.purpose] ?? `Online payment (${o.purpose})`,
+      created_at: ledgerTs(o.created_at),
+      updated_at: ledgerTs(o.updated_at),
+      status: o.status ?? null,
+      txn_type: paid ? "debit" : "pending",
+      level: null,
+      gst: null,
+      tds: null,
+      amount_to_pay: null,
+      service_charge: null,
+      source_id: null,
+      payment_method: "Cashfree",
+      txn: o.order_id,
+      total_amount: ledgerNum(o.order_amount),
+      admin_charge: null,
+      deposit_principal: null
+    });
+  }
+
+  rows.sort((a, b) => {
+    const ta = a.created_at ? new Date(String(a.created_at)).getTime() : 0;
+    const tb = b.created_at ? new Date(String(b.created_at)).getTime() : 0;
+    return tb - ta;
+  });
+
+  return rows;
+}
+
 export async function walletHistory(req: AuthenticatedRequest, res: Response) {
   const user = req.user;
   if (!user) {
@@ -116,11 +285,18 @@ export async function walletHistory(req: AuthenticatedRequest, res: Response) {
   }
 
   const comment = req.params.comment;
+  const mergeAll = String((req.query as { merge?: string }).merge ?? "") === "all";
+
+  if (mergeAll && !comment) {
+    const rows = await buildFullTransactionLedger(user.regNo);
+    return res.json({ status: "done", wallet_history: rows, user, ledger_scope: "full" });
+  }
+
   const rows = await prisma.wallet.findMany({
     where: { regNo: user.regNo, ...(comment ? { comment } : {}) }
   });
 
-  return res.json({ status: "done", wallet_history: rows, user });
+  return res.json({ status: "done", wallet_history: rows, user, ledger_scope: comment ? "filtered" : "income_wallet" });
 }
 
 export async function coinHistory(req: AuthenticatedRequest, res: Response) {
