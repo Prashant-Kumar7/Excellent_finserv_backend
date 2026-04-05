@@ -241,8 +241,8 @@ model Deposit {
   gst          Decimal?
   admin_charge Decimal?
   cf_payment_id String?
-  created_at   DateTime?
-  updated_at   DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
 
   @@map("deposits")
 }

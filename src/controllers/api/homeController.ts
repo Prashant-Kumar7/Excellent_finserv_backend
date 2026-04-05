@@ -442,6 +442,7 @@ export async function deposit(req: AuthenticatedRequest, res: Response) {
     return res.status(422).json({ status: false, message: `Total amount must be ${total}` });
   }
 
+  const now = new Date();
   const createdDeposit = await prisma.deposit.create({
     data: {
       regNo: user.regNo,
@@ -452,7 +453,9 @@ export async function deposit(req: AuthenticatedRequest, res: Response) {
       txn,
       total_amount: total,
       gst,
-      admin_charge: adminCharge
+      admin_charge: adminCharge,
+      created_at: now,
+      updated_at: now
     }
   });
   return res.json({
@@ -1267,6 +1270,7 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
       });
       const cfOrderId = cf.order_id;
 
+      const nowCf = new Date();
       await prisma.deposit.create({
         data: {
           regNo: user.regNo,
@@ -1276,7 +1280,9 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
           txn: cfOrderId,
           total_amount: total,
           gst,
-          admin_charge: adminCharge
+          admin_charge: adminCharge,
+          created_at: nowCf,
+          updated_at: nowCf
         }
       });
 
