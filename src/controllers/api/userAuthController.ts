@@ -2,7 +2,7 @@ import type { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { prisma } from "../../shared/db.js";
 import { signUserToken } from "../../shared/auth/jwt.js";
-import { generateRandomExEightRegNo } from "../../shared/regNo.js";
+import { generateRandomExSixUniqueDigitRegNo } from "../../shared/regNo.js";
 
 type UserRow = {
   id: number;
@@ -263,7 +263,7 @@ export async function registerWithOtp(req: Request, res: Response) {
 
     let regNo = "";
     while (!regNo) {
-      const candidate = generateRandomExEightRegNo();
+      const candidate = generateRandomExSixUniqueDigitRegNo();
       const existingReg = await prisma.user.findFirst({ where: { regNo: candidate }, select: { id: true } });
       if (!existingReg) {
         regNo = candidate;

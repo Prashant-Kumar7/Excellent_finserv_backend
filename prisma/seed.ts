@@ -114,7 +114,7 @@ async function main() {
     // AppConfig.defaultSponsorMobile expects a sponsor to exist.
     {
       id: 1,
-      regNo: "EXSPONSOR",
+      regNo: "EX000001",
       name: "Default",
       last_name: "Sponsor",
       email: "sponsor@example.com",
@@ -128,7 +128,7 @@ async function main() {
     },
     {
       id: 2,
-      regNo: "USR001",
+      regNo: "EX000002",
       name: "Ravi",
       last_name: "Kumar",
       email: "ravi.k@example.com",
@@ -138,7 +138,7 @@ async function main() {
     },
     {
       id: 3,
-      regNo: "USR002",
+      regNo: "EX000003",
       name: "Anita",
       last_name: "Sharma",
       email: "anita.s@example.com",
@@ -152,7 +152,7 @@ async function main() {
     },
     {
       id: 4,
-      regNo: "USR003",
+      regNo: "EX000004",
       name: "Vikram",
       last_name: "Singh",
       email: "vikram.s@example.com",
@@ -162,7 +162,7 @@ async function main() {
     },
     {
       id: 5,
-      regNo: "USR004",
+      regNo: "EX000005",
       name: "Priya",
       last_name: "Nair",
       email: "priya.n@example.com",
@@ -176,7 +176,7 @@ async function main() {
     },
     {
       id: 6,
-      regNo: "USR005",
+      regNo: "EX000006",
       name: "Arjun",
       last_name: "Mehta",
       email: "arjun.m@example.com",
