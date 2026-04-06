@@ -20,15 +20,10 @@ function packageNameByAmount(amount: number) {
   return "Free ID";
 }
 
-export async function dashboard(req: AuthenticatedRequest, res: Response) {
-  const user = req.user;
-  if (!user) {
-    return res.status(404).json({ status: "done", message: "User Not found." });
-  }
-
-  const regNo = user.regNo;
+/** Same profile shape as dashboard `user` for client screens (e.g. history). */
+async function getUserForClientById(userId: number) {
   const currentUser = await prisma.user.findFirst({
-    where: { id: user.id },
+    where: { id: userId },
     select: {
       id: true,
       name: true,
@@ -52,14 +47,24 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
       pan_image: true
     }
   });
-  if (!currentUser) {
-    return res.status(404).json({ status: "done", message: "User Not found." });
-  }
-
-  const userForClient = {
+  if (!currentUser) return null;
+  return {
     ...currentUser,
     user_image: await signSupabaseAvatarUrl(currentUser.user_image ?? undefined)
   };
+}
+
+export async function dashboard(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) {
+    return res.status(404).json({ status: "done", message: "User Not found." });
+  }
+
+  const regNo = user.regNo;
+  const userForClient = await getUserForClientById(user.id);
+  if (!userForClient) {
+    return res.status(404).json({ status: "done", message: "User Not found." });
+  }
 
   const [
     bankRows,
@@ -89,6 +94,8 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
       }
     : null;
 
+  const notificationMessage = (process.env.HOME_NOTIFICATION_MESSAGE ?? "").trim();
+
   return res.json({
     status: "done",
     user: userForClient,
@@ -105,7 +112,41 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
     coin_redeam_button: "show",
     coni_bal: sum(coinRows),
     recharge_income: sum(coinRows, "recharge_income"),
-    package_amount: packageNameByAmount(Number(packageAmount))
+    package_amount: packageNameByAmount(Number(packageAmount)),
+    notification_message: notificationMessage
+  });
+}
+
+/** Accepts recharge “payments” until the external operator API is wired; stores a pending row for ops. */
+export async function mobileRechargeRequest(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ status: false, message: "Invalid or expired token" });
+  }
+  const raw = req.body as Record<string, unknown>;
+  const mobile = String(raw.mobile ?? "").replace(/\D/g, "");
+  const operator = String(raw.operator ?? "").trim() || null;
+  const amountNum = Number(raw.amount);
+  if (mobile.length !== 10) {
+    return res.status(422).json({ status: false, message: "Valid 10-digit mobile required" });
+  }
+  if (!Number.isFinite(amountNum) || amountNum <= 0) {
+    return res.status(422).json({ status: false, message: "Valid amount required" });
+  }
+  if (!operator) {
+    return res.status(422).json({ status: false, message: "Operator is required" });
+  }
+  await prisma.mobileRechargeRequest.create({
+    data: {
+      regNo: user.regNo,
+      mobile,
+      operator,
+      amount: amountNum
+    }
+  });
+  return res.json({
+    status: true,
+    message: "Payment request received. Your recharge will be processed shortly."
   });
 }
 
@@ -118,14 +159,15 @@ function ledgerTs(d: Date | null | undefined): string | null {
   return d ? d.toISOString() : null;
 }
 
-/** Merged audit trail: income wallet, bank wallet, deposit requests, coin wallet, online (Cashfree) payments. */
+/** Merged audit trail: income wallet, bank wallet, deposit requests, coin wallet, online (Cashfree) payments, mobile recharge queue. */
 export async function buildFullTransactionLedger(regNo: string) {
-  const [wallets, banks, deposits, coins, cfOrders] = await Promise.all([
+  const [wallets, banks, deposits, coins, cfOrders, rechargePending] = await Promise.all([
     prisma.wallet.findMany({ where: { regNo } }),
     prisma.bank.findMany({ where: { regNo } }),
     prisma.deposit.findMany({ where: { regNo } }),
     prisma.coin.findMany({ where: { regNo } }),
-    prisma.cashfreeOrder.findMany({ where: { reg_no: regNo }, orderBy: { id: "desc" } })
+    prisma.cashfreeOrder.findMany({ where: { reg_no: regNo }, orderBy: { id: "desc" } }),
+    prisma.mobileRechargeRequest.findMany({ where: { regNo }, orderBy: { id: "desc" } })
   ]);
 
   const rows: Record<string, unknown>[] = [];
@@ -269,6 +311,32 @@ export async function buildFullTransactionLedger(regNo: string) {
     });
   }
 
+  for (const r of rechargePending) {
+    rows.push({
+      ledger_id: `mr_${r.id}`,
+      ledger_source: "mobile_recharge_pending",
+      id: r.id,
+      regNo: r.regNo,
+      amount: -ledgerNum(r.amount),
+      comment: `Mobile recharge request (${r.operator ?? "—"} · ${r.mobile})`,
+      created_at: ledgerTs(r.created_at),
+      updated_at: ledgerTs(r.created_at),
+      status: "pending",
+      txn_type: "pending",
+      level: null,
+      gst: null,
+      tds: null,
+      amount_to_pay: null,
+      service_charge: null,
+      source_id: null,
+      payment_method: null,
+      txn: `MR${r.id}`,
+      total_amount: ledgerNum(r.amount),
+      admin_charge: null,
+      deposit_principal: null
+    });
+  }
+
   rows.sort((a, b) => {
     const ta = a.created_at ? new Date(String(a.created_at)).getTime() : 0;
     const tb = b.created_at ? new Date(String(b.created_at)).getTime() : 0;
@@ -281,22 +349,53 @@ export async function buildFullTransactionLedger(regNo: string) {
 export async function walletHistory(req: AuthenticatedRequest, res: Response) {
   const user = req.user;
   if (!user) {
-    return res.status(404).json({ status: "done", message: "User Not found." });
+    return res.status(401).json({ status: false, message: "Unauthorized" });
   }
 
   const comment = req.params.comment;
   const mergeAll = String((req.query as { merge?: string }).merge ?? "") === "all";
 
   if (mergeAll && !comment) {
-    const rows = await buildFullTransactionLedger(user.regNo);
-    return res.json({ status: "done", wallet_history: rows, user, ledger_scope: "full" });
+    try {
+      const rows = await buildFullTransactionLedger(user.regNo);
+      const userForClient = (await getUserForClientById(user.id)) ?? {
+        id: user.id,
+        regNo: user.regNo,
+        mobile: user.mobile
+      };
+      return res.json({
+        status: "done",
+        wallet_history: rows,
+        user: userForClient,
+        ledger_scope: "full"
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load transaction history";
+      // eslint-disable-next-line no-console
+      console.error("buildFullTransactionLedger", e);
+      return res.status(500).json({ status: false, message: msg });
+    }
   }
 
-  const rows = await prisma.wallet.findMany({
-    where: { regNo: user.regNo, ...(comment ? { comment } : {}) }
-  });
-
-  return res.json({ status: "done", wallet_history: rows, user, ledger_scope: comment ? "filtered" : "income_wallet" });
+  try {
+    const rows = await prisma.wallet.findMany({
+      where: { regNo: user.regNo, ...(comment ? { comment } : {}) }
+    });
+    const userForClient = (await getUserForClientById(user.id)) ?? {
+      id: user.id,
+      regNo: user.regNo,
+      mobile: user.mobile
+    };
+    return res.json({
+      status: "done",
+      wallet_history: rows,
+      user: userForClient,
+      ledger_scope: comment ? "filtered" : "income_wallet"
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Failed to load wallet history";
+    return res.status(500).json({ status: false, message: msg });
+  }
 }
 
 export async function coinHistory(req: AuthenticatedRequest, res: Response) {

@@ -342,6 +342,18 @@ model Setting {
   @@map("settings")
 }
 
+/// Queued mobile recharges until the external recharge API is integrated.
+model MobileRechargeRequest {
+  id         Int      @id @default(autoincrement())
+  regNo      String
+  mobile     String
+  operator   String?
+  amount     Decimal
+  created_at DateTime @default(now())
+
+  @@map("mobile_recharge_requests")
+}
+
 model Loan {
   id         Int      @id @default(autoincrement())
   regNo      String?

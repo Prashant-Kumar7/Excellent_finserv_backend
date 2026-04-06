@@ -36,6 +36,7 @@ import {
   insuranceRequest,
   loanHistory,
   loanRequest,
+  mobileRechargeRequest,
   myDirects,
   myTickets,
   purchasePackage,
@@ -106,6 +107,7 @@ protectedUserRouter.post("/tender_store", saveTender);
 protectedUserRouter.get("/single_tende/:tender_id", singleTender);
 protectedUserRouter.post("/tender_list", tenderList);
 protectedUserRouter.post("/dashboard", dashboard);
+protectedUserRouter.post("/mobile-recharge-request", mobileRechargeRequest);
 protectedUserRouter.get("/wallet-history", walletHistory);
 protectedUserRouter.get("/coins-history", coinHistory);
 protectedUserRouter.get("/wallet-history/:comment", walletHistory);
