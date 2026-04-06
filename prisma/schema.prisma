@@ -264,8 +264,8 @@ model Coin {
   regNo      String?
   amount     Decimal?
   comment    String?
-  created_at DateTime?
-  updated_at DateTime?
+  created_at DateTime? @default(now())
+  updated_at DateTime? @updatedAt
 
   @@map("coins")
 }
@@ -283,8 +283,8 @@ model Wallet {
   amount_to_pay Decimal?
   level         Int?
   source_id     Int?
-  created_at    DateTime?
-  updated_at    DateTime?
+  created_at    DateTime? @default(now())
+  updated_at    DateTime? @updatedAt
 
   @@map("wallet")
 }
@@ -296,8 +296,8 @@ model Bank {
   status     String?
   comment    String?
   txn_type   String?
-  created_at DateTime?
-  updated_at DateTime?
+  created_at DateTime? @default(now())
+  updated_at DateTime? @updatedAt
 
   @@map("bank")
 }
