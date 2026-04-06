@@ -34,6 +34,9 @@ import {
   incomeWalletWithdraw,
   incomeWalletWithdrawCancel,
   holdEarnSubmit,
+  holdEarnLock,
+  holdEarnWithdraw,
+  holdEarnActive,
   insuranceHistory,
   insuranceRequest,
   loanHistory,
@@ -112,6 +115,9 @@ protectedUserRouter.post("/dashboard", dashboard);
 protectedUserRouter.post("/mobile-recharge-request", mobileRechargeRequest);
 protectedUserRouter.post("/digital-declaration-accept", digitalDeclarationAccept);
 protectedUserRouter.post("/hold-earn-submit", holdEarnSubmit);
+protectedUserRouter.post("/hold-earn-lock", holdEarnLock);
+protectedUserRouter.post("/hold-earn-withdraw", holdEarnWithdraw);
+protectedUserRouter.get("/hold-earn-active", holdEarnActive);
 protectedUserRouter.get("/wallet-history", walletHistory);
 protectedUserRouter.get("/coins-history", coinHistory);
 protectedUserRouter.get("/wallet-history/:comment", walletHistory);

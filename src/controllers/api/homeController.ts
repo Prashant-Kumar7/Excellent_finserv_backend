@@ -66,6 +66,7 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
   if (!user) {
     return res.status(404).json({ status: "done", message: "User Not found." });
   }
+  await distributeHoldEarnRewardsForUser(user.regNo);
 
   const regNo = user.regNo;
   const userForClient = await getUserForClientById(user.id);
@@ -188,6 +189,29 @@ export async function holdEarnSubmit(req: AuthenticatedRequest, res: Response) {
     return res.status(401).json({ status: false, message: "Invalid or expired token" });
   }
   const raw = req.body as Record<string, unknown>;
+  const birthDateRaw = String(raw.birth_date ?? "").trim();
+  const birthDate = birthDateRaw ? new Date(birthDateRaw) : null;
+  if (!birthDate || Number.isNaN(birthDate.getTime())) {
+    return res.status(422).json({ status: false, message: "Valid birth_date is required" });
+  }
+  const now = new Date();
+  const adultCutoff = new Date(now.getFullYear() - 18, now.getMonth(), now.getDate());
+  if (birthDate > adultCutoff) {
+    return res.status(422).json({ status: false, message: "Minimum age is 18 years for Hold & Earn" });
+  }
+  const kycUser = await prisma.user.findFirst({
+    where: { id: user.id },
+    select: { aadhar_number: true, pan_number: true },
+  });
+  const hasAadhar = Boolean(String(kycUser?.aadhar_number ?? "").trim());
+  const hasPan = Boolean(String(kycUser?.pan_number ?? "").trim());
+  if (!hasAadhar || !hasPan) {
+    return res.status(422).json({
+      status: false,
+      message: "Full KYC required (Aadhaar and PAN) before Hold & Earn.",
+    });
+  }
+
   const fundSource = String(raw.fund_source ?? "").trim();
   const lockMonths = Number(raw.lock_months);
   const amountNum = Number(raw.amount);
@@ -213,11 +237,12 @@ export async function holdEarnSubmit(req: AuthenticatedRequest, res: Response) {
   if (amountNum < 10000) {
     return res.status(422).json({ status: false, message: "Minimum Hold & Earn amount is 10000" });
   }
-  await prisma.holdEarnRequest.create({
+  const created = await prisma.holdEarnRequest.create({
     data: {
       regNo: user.regNo,
       amount: amountNum,
       fundSource,
+      birthDate,
       lockMonths,
       agreementDate,
       autoRenew,
@@ -228,8 +253,306 @@ export async function holdEarnSubmit(req: AuthenticatedRequest, res: Response) {
   });
   return res.json({
     status: true,
-    message: "Hold & Earn request received."
+    message: "Hold & Earn request received.",
+    data: {
+      id: created.id,
+      agreement_date: created.agreementDate?.toISOString() ?? null
+    }
   });
+}
+
+function addMonths(date: Date, months: number): Date {
+  const d = new Date(date.getTime());
+  d.setMonth(d.getMonth() + months);
+  return d;
+}
+
+function holdEarnRatePercent(freq: "daily" | "monthly"): number {
+  if (freq === "daily") {
+    return Number(process.env.HOLD_EARN_DAILY_RATE_PERCENT ?? "0.05");
+  }
+  return Number(process.env.HOLD_EARN_MONTHLY_RATE_PERCENT ?? "1.5");
+}
+
+function safePeriodCount(from: Date, to: Date, freq: "daily" | "monthly"): number {
+  if (to <= from) return 0;
+  if (freq === "daily") {
+    const ms = to.getTime() - from.getTime();
+    return Math.floor(ms / (24 * 60 * 60 * 1000));
+  }
+  const months = (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
+  return Math.max(0, months);
+}
+
+async function distributeHoldEarnRewardsForUser(regNo: string) {
+  const now = new Date();
+  const active = await prisma.holdEarnRequest.findMany({
+    where: { regNo, status: "active" },
+    orderBy: { id: "desc" },
+  });
+  for (const h of active) {
+    const freq = (h.rewardFrequency === "daily" ? "daily" : "monthly") as "daily" | "monthly";
+    const from = h.lastRewardAt ?? h.lockedAt ?? h.createdAt;
+    if (!from) continue;
+    const periods = safePeriodCount(from, now, freq);
+    if (periods <= 0) continue;
+    const ratePct = holdEarnRatePercent(freq);
+    if (!Number.isFinite(ratePct) || ratePct <= 0) continue;
+    const principal = Number(h.amount ?? 0);
+    if (!Number.isFinite(principal) || principal <= 0) continue;
+    const rewardEach = roundMoney((principal * ratePct) / 100);
+    const total = roundMoney(rewardEach * periods);
+    if (total <= 0) continue;
+    await prisma.coin.create({
+      data: {
+        regNo,
+        amount: total,
+        comment: `hold_earn_bonus_${h.id}`,
+      },
+    });
+    await prisma.holdEarnRequest.update({
+      where: { id: h.id },
+      data: { lastRewardAt: now },
+    });
+  }
+}
+
+function isEarlyWithdrawal(now: Date, agreementDate: Date | null, lockMonths: number): boolean {
+  if (!agreementDate) return true;
+  const maturity = addMonths(agreementDate, lockMonths);
+  return now.getTime() < maturity.getTime();
+}
+
+/** Locks principal into hold&earn (Pay Now). */
+export async function holdEarnLock(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ status: false, message: "Invalid or expired token" });
+  }
+  const raw = req.body as Record<string, unknown>;
+  const holdId = Number(raw.hold_request_id ?? raw.holdId ?? raw.id);
+  if (!Number.isFinite(holdId) || holdId <= 0) {
+    return res.status(422).json({ status: false, message: "Valid hold_request_id required" });
+  }
+
+  const hold = await prisma.holdEarnRequest.findFirst({
+    where: { id: holdId, regNo: user.regNo },
+  });
+  if (!hold) {
+    return res.status(404).json({ status: false, message: "Hold request not found" });
+  }
+  if (hold.status !== "pending") {
+    return res.status(422).json({ status: false, message: `Cannot lock from status: ${hold.status}` });
+  }
+  const principal = Number(hold.amount ?? 0);
+  const kycUser = await prisma.user.findFirst({
+    where: { id: user.id },
+    select: { aadhar_number: true, pan_number: true },
+  });
+  const hasAadhar = Boolean(String(kycUser?.aadhar_number ?? "").trim());
+  const hasPan = Boolean(String(kycUser?.pan_number ?? "").trim());
+  if (!hasAadhar || !hasPan) {
+    return res.status(422).json({
+      status: false,
+      message: "Full KYC required (Aadhaar and PAN) before locking funds.",
+    });
+  }
+
+  if (!Number.isFinite(principal) || principal < 10000) {
+    return res.status(422).json({ status: false, message: "Invalid principal amount" });
+  }
+
+  const lockedAt = new Date();
+  try {
+    await prisma.$transaction(async (tx) => {
+      if (hold.fundSource === "reward_balance") {
+        const coinRows = await tx.coin.findMany({ where: { regNo: user.regNo } });
+        const available = coinRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+        if (available < principal) {
+          throw new Error("Not Enough reward balance");
+        }
+        await tx.coin.create({
+          data: {
+            regNo: user.regNo,
+            amount: -1 * principal,
+            comment: `hold_earn_lock_${hold.id}`,
+          },
+        });
+      } else if (hold.fundSource === "own_funds") {
+        const bankRows = await tx.bank.findMany({ where: { regNo: user.regNo } });
+        const available = bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+        if (available < principal) {
+          throw new Error("Not Enough own funds");
+        }
+        await tx.bank.create({
+          data: {
+            regNo: user.regNo,
+            status: "pending",
+            amount: -1 * principal,
+            comment: `hold_earn_lock_${hold.id}`,
+            txn_type: "debit",
+          },
+        });
+      } else {
+        throw new Error("Invalid fund source");
+      }
+
+      await tx.holdEarnRequest.update({
+        where: { id: hold.id },
+        data: {
+          status: "active",
+          lockedAt,
+        },
+      });
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Could not lock Hold & Earn";
+    return res.status(422).json({ status: false, message: msg });
+  }
+
+  return res.json({
+    status: true,
+    message: "Hold & Earn locked.",
+    data: {
+      id: hold.id,
+      locked_at: lockedAt.toISOString()
+    }
+  });
+}
+
+/** Withdrawal rules: early = 20% principal penalty, remove earned rewards; apply TDS + 18% GST. */
+export async function holdEarnWithdraw(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ status: false, message: "Invalid or expired token" });
+  }
+  const raw = req.body as Record<string, unknown>;
+  const holdId = Number(raw.hold_request_id ?? raw.holdId ?? raw.id);
+  if (!Number.isFinite(holdId) || holdId <= 0) {
+    return res.status(422).json({ status: false, message: "Valid hold_request_id required" });
+  }
+
+  await distributeHoldEarnRewardsForUser(user.regNo);
+
+  const hold = await prisma.holdEarnRequest.findFirst({
+    where: { id: holdId, regNo: user.regNo },
+  });
+  if (!hold) {
+    return res.status(404).json({ status: false, message: "Hold request not found" });
+  }
+  if (hold.status !== "active") {
+    return res.status(422).json({ status: false, message: `Cannot withdraw from status: ${hold.status}` });
+  }
+
+  const now = new Date();
+  const principal = Number(hold.amount ?? 0);
+  if (!Number.isFinite(principal) || principal <= 0) {
+    return res.status(422).json({ status: false, message: "Invalid principal amount" });
+  }
+
+  const early = isEarlyWithdrawal(now, hold.agreementDate ?? null, hold.lockMonths ?? 0);
+
+  let penalty = 0;
+  let tds = 0;
+  let gst = 0;
+  let net = principal;
+
+  if (early) {
+    penalty = roundMoney(principal * 0.2);
+    const setting = (await prisma.setting.findFirst()) ?? ({} as any);
+    const tdsPercent = Number(setting.income_wallet_withdraw_tds ?? 0);
+    tds = roundMoney((penalty * tdsPercent) / 100);
+    // Per spec: GST 18% on fees/penalties.
+    gst = roundMoney(penalty * 0.18);
+    net = roundMoney(principal - penalty - tds - gst);
+
+    // Remove earned rewards (Bonus Wallet credits) by reversing matching bonus coin entries.
+    const bonusPrefix = `hold_earn_bonus_${hold.id}`;
+    const bonusRows = await prisma.coin.findMany({
+      where: {
+        regNo: user.regNo,
+        comment: { startsWith: bonusPrefix },
+      },
+    });
+    const totalBonus = bonusRows.reduce((a, b) => {
+      const amt = Number(b.amount ?? 0);
+      return a + (amt > 0 ? amt : 0);
+    }, 0);
+    if (totalBonus > 0) {
+      await prisma.coin.create({
+        data: {
+          regNo: user.regNo,
+          amount: -1 * totalBonus,
+          comment: `hold_earn_bonus_removed_${hold.id}`,
+        },
+      });
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.holdEarnRequest.update({
+      where: { id: hold.id },
+      data: {
+        status: early ? "early_withdrawn" : "withdrawn",
+        withdrawnAt: now,
+        penaltyAmount: early ? penalty : null,
+        tdsAmount: early ? tds : null,
+        gstAmount: early ? gst : null,
+        netAmount: net,
+      },
+    });
+
+    if (hold.fundSource === "reward_balance") {
+      await tx.coin.create({
+        data: {
+          regNo: user.regNo,
+          amount: net,
+          comment: `hold_earn_withdraw_${hold.id}`,
+        },
+      });
+    } else if (hold.fundSource === "own_funds") {
+      await tx.bank.create({
+        data: {
+          regNo: user.regNo,
+          status: "pending",
+          amount: net,
+          comment: `hold_earn_withdraw_${hold.id}`,
+          txn_type: "credit",
+        },
+      });
+    }
+  });
+
+  return res.json({
+    status: true,
+    message: early ? "Early withdrawal processed (penalty + taxes applied)." : "Withdrawal processed.",
+    data: {
+      hold_id: hold.id,
+      early,
+      principal,
+      penalty_amount: early ? penalty : 0,
+      tds_amount: early ? tds : 0,
+      gst_amount: early ? gst : 0,
+      net_amount: net,
+    }
+  });
+}
+
+export async function holdEarnActive(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ status: false, message: "Invalid or expired token" });
+  }
+  await distributeHoldEarnRewardsForUser(user.regNo);
+  const active = await prisma.holdEarnRequest.findMany({
+    where: {
+      regNo: user.regNo,
+      status: { in: ["pending", "active"] },
+    },
+    orderBy: { id: "desc" },
+    take: 5,
+  });
+  return res.json({ status: true, data: active });
 }
 
 function ledgerNum(v: unknown): number {
@@ -281,13 +604,14 @@ function enrichLedgerRowsWithDebitCreditBalance(rows: Record<string, unknown>[])
 
 /** Merged audit trail: income wallet, bank wallet, deposit requests, coin wallet, online (Cashfree) payments, mobile recharge queue. */
 export async function buildFullTransactionLedger(regNo: string) {
-  const [wallets, banks, deposits, coins, cfOrders, rechargePending] = await Promise.all([
+  const [wallets, banks, deposits, coins, cfOrders, rechargePending, holdEarnRows] = await Promise.all([
     prisma.wallet.findMany({ where: { regNo } }),
     prisma.bank.findMany({ where: { regNo } }),
     prisma.deposit.findMany({ where: { regNo } }),
     prisma.coin.findMany({ where: { regNo } }),
     prisma.cashfreeOrder.findMany({ where: { reg_no: regNo }, orderBy: { id: "desc" } }),
-    prisma.mobileRechargeRequest.findMany({ where: { regNo }, orderBy: { id: "desc" } })
+    prisma.mobileRechargeRequest.findMany({ where: { regNo }, orderBy: { id: "desc" } }),
+    prisma.holdEarnRequest.findMany({ where: { regNo }, orderBy: { id: "desc" } }),
   ]);
 
   const rows: Record<string, unknown>[] = [];
@@ -457,6 +781,33 @@ export async function buildFullTransactionLedger(regNo: string) {
     });
   }
 
+  for (const h of holdEarnRows) {
+    const status = String(h.status ?? "");
+    rows.push({
+      ledger_id: `he_${h.id}`,
+      ledger_source: "hold_earn",
+      id: h.id,
+      regNo: h.regNo,
+      amount: status === "active" ? -ledgerNum(h.amount) : ledgerNum(h.netAmount ?? 0),
+      comment: `Hold & Earn (${status || "pending"})`,
+      created_at: ledgerTs(h.createdAt),
+      updated_at: ledgerTs(h.withdrawnAt ?? h.lockedAt ?? h.createdAt),
+      status,
+      txn_type: status === "active" ? "debit" : status.includes("withdraw") ? "credit" : "pending",
+      level: null,
+      gst: ledgerNum(h.gstAmount),
+      tds: ledgerNum(h.tdsAmount),
+      amount_to_pay: ledgerNum(h.netAmount),
+      service_charge: ledgerNum(h.penaltyAmount),
+      source_id: null,
+      payment_method: h.fundSource,
+      txn: `HE${h.id}`,
+      total_amount: ledgerNum(h.amount),
+      admin_charge: null,
+      deposit_principal: ledgerNum(h.amount),
+    });
+  }
+
   enrichLedgerRowsWithDebitCreditBalance(rows);
 
   rows.sort((a, b) => {
@@ -473,6 +824,7 @@ export async function walletHistory(req: AuthenticatedRequest, res: Response) {
   if (!user) {
     return res.status(401).json({ status: false, message: "Unauthorized" });
   }
+  await distributeHoldEarnRewardsForUser(user.regNo);
 
   const comment = req.params.comment;
   const mergeAll = String((req.query as { merge?: string }).merge ?? "") === "all";
@@ -902,47 +1254,17 @@ export async function purchasePackageHistory(req: AuthenticatedRequest, res: Res
 }
 
 export async function bankWalletWithdraw(req: AuthenticatedRequest, res: Response) {
-  const user = req.user;
-  const amount = Number((req.body as { amount?: number }).amount);
-  if (!user || !amount || amount <= 0) {
-    return res.status(422).json({ status: false, v_errors: { amount: ["Amount is required."] } });
-  }
-  const balRows = await prisma.bank.findMany({ where: { regNo: user.regNo } });
-  if (balRows.reduce((a, b) => a + Number(b.amount ?? 0), 0) < amount) return res.json({ status: false, message: "Not Enough Balance" });
-  await prisma.bank.create({
-    data: { regNo: user.regNo, status: "pending", amount: -1 * amount, comment: "withdraw", txn_type: "debit" }
+  return res.status(422).json({
+    status: false,
+    message: "Withdrawals are allowed only from Reward Wallet.",
   });
-  return res.json({ status: "done", message: "successfully withdraw" });
 }
 
 export async function incomeWalletWithdraw(req: AuthenticatedRequest, res: Response) {
-  const user = req.user;
-  const amount = Number((req.body as { amount?: number }).amount);
-  if (!user || !amount || amount <= 0) {
-    return res.status(422).json({ status: false, v_errors: { amount: ["Amount is required."] } });
-  }
-  const balRows = await prisma.wallet.findMany({ where: { regNo: user.regNo } });
-  if (balRows.reduce((a, b) => a + Number(b.amount ?? 0), 0) < amount) return res.json({ status: false, message: "Not Enough Balance" });
-
-  const setting = ((await prisma.setting.findFirst()) ?? {}) as Record<string, number>;
-  const tds = (amount * Number(setting.income_wallet_withdraw_tds ?? 0)) / 100;
-  const serviceCharge = (amount * Number(setting.service_charge ?? 0)) / 100;
-  const gst = (serviceCharge * Number(setting.income_wallet_withdraw_gst ?? 0)) / 100;
-  const amountToPay = amount - tds - serviceCharge - gst;
-
-  await prisma.wallet.create({
-    data: {
-      regNo: user.regNo,
-      amount: -1 * amount,
-      comment: "withdraw",
-      status: "pending",
-      tds,
-      service_charge: serviceCharge,
-      gst,
-      amount_to_pay: amountToPay
-    }
+  return res.status(422).json({
+    status: false,
+    message: "Withdrawals are allowed only from Reward Wallet.",
   });
-  return res.json({ status: "done", message: "Successfully Withdraw" });
 }
 
 export async function coinWalletWithdraw(req: AuthenticatedRequest, res: Response) {

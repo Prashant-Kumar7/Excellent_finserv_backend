@@ -449,6 +449,7 @@ model HoldEarnRequest {
   regNo          String
   amount         Decimal  @db.Decimal(14, 2)
   fundSource     String
+  birthDate      DateTime?
   lockMonths     Int
   agreementDate  DateTime?
   /// Whether the user asked to auto-renew the lock at maturity.
@@ -458,6 +459,15 @@ model HoldEarnRequest {
   /// Last time rewards were applied for this lock (for principal-only accrual).
   lastRewardAt   DateTime?
   status         String   @default("pending")
+  /// When the principal was locked (Pay Now).
+  lockedAt       DateTime?
+  /// When user withdrew (early or on maturity).
+  withdrawnAt    DateTime?
+  /// Early withdrawal fields (20% penalty on principal).
+  penaltyAmount  Decimal? @db.Decimal(14, 2)
+  tdsAmount      Decimal? @db.Decimal(14, 2)
+  gstAmount      Decimal? @db.Decimal(14, 2)
+  netAmount      Decimal? @db.Decimal(14, 2)
   createdAt      DateTime @default(now())
 
   @@map("hold_earn_requests")
