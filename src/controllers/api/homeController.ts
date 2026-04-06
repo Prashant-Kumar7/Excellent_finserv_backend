@@ -1,4 +1,11 @@
 import type { Request, Response } from "express";
+
+function clientIp(req: Request): string {
+  const xf = req.headers["x-forwarded-for"];
+  if (typeof xf === "string" && xf.length > 0) return xf.split(",")[0]!.trim();
+  if (Array.isArray(xf) && xf[0]) return xf[0].trim();
+  return req.socket?.remoteAddress ?? "";
+}
 import bcrypt from "bcryptjs";
 import type { AuthenticatedRequest } from "../../shared/middleware/userAuth.js";
 import { prisma } from "../../shared/db.js";
@@ -147,6 +154,71 @@ export async function mobileRechargeRequest(req: AuthenticatedRequest, res: Resp
   return res.json({
     status: true,
     message: "Payment request received. Your recharge will be processed shortly."
+  });
+}
+
+/** Stores digital declaration acceptance with user id, IP, and server timestamp (audit). */
+export async function digitalDeclarationAccept(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ status: false, message: "Invalid or expired token" });
+  }
+  const raw = req.body as Record<string, unknown>;
+  const context = String(raw.context ?? "hold_earn").trim() || "hold_earn";
+  const ip = clientIp(req);
+  await prisma.digitalDeclarationAudit.create({
+    data: {
+      userId: user.id,
+      regNo: user.regNo ?? null,
+      ipAddress: ip.length > 0 ? ip : null,
+      context
+    }
+  });
+  return res.json({
+    status: true,
+    message: "Declaration recorded.",
+    data: { agreed_at: new Date().toISOString() }
+  });
+}
+
+/** Queues a Hold & Earn application for ops / future payment integration. */
+export async function holdEarnSubmit(req: AuthenticatedRequest, res: Response) {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ status: false, message: "Invalid or expired token" });
+  }
+  const raw = req.body as Record<string, unknown>;
+  const fundSource = String(raw.fund_source ?? "").trim();
+  const lockMonths = Number(raw.lock_months);
+  const amountNum = Number(raw.amount);
+  let agreementDate: Date | null = null;
+  const adRaw = raw.agreement_date;
+  if (typeof adRaw === "string" && adRaw.length > 0) {
+    const d = new Date(adRaw);
+    if (!Number.isNaN(d.getTime())) agreementDate = d;
+  }
+  if (fundSource !== "reward_balance" && fundSource !== "own_funds") {
+    return res.status(422).json({ status: false, message: "Invalid fund source" });
+  }
+  if (![6, 12, 25].includes(lockMonths)) {
+    return res.status(422).json({ status: false, message: "Lock-in must be 6, 12, or 25 months" });
+  }
+  if (!Number.isFinite(amountNum) || amountNum <= 0) {
+    return res.status(422).json({ status: false, message: "Valid amount required" });
+  }
+  await prisma.holdEarnRequest.create({
+    data: {
+      regNo: user.regNo,
+      amount: amountNum,
+      fundSource,
+      lockMonths,
+      agreementDate,
+      status: "pending"
+    }
+  });
+  return res.json({
+    status: true,
+    message: "Hold & Earn request received."
   });
 }
 

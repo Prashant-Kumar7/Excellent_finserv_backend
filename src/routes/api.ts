@@ -28,10 +28,12 @@ import {
   deposit,
   deposit2,
   depositHistory,
+  digitalDeclarationAccept,
   digilockerDocument,
   digilockerStatus,
   incomeWalletWithdraw,
   incomeWalletWithdrawCancel,
+  holdEarnSubmit,
   insuranceHistory,
   insuranceRequest,
   loanHistory,
@@ -108,6 +110,8 @@ protectedUserRouter.get("/single_tende/:tender_id", singleTender);
 protectedUserRouter.post("/tender_list", tenderList);
 protectedUserRouter.post("/dashboard", dashboard);
 protectedUserRouter.post("/mobile-recharge-request", mobileRechargeRequest);
+protectedUserRouter.post("/digital-declaration-accept", digitalDeclarationAccept);
+protectedUserRouter.post("/hold-earn-submit", holdEarnSubmit);
 protectedUserRouter.get("/wallet-history", walletHistory);
 protectedUserRouter.get("/coins-history", coinHistory);
 protectedUserRouter.get("/wallet-history/:comment", walletHistory);

@@ -429,3 +429,31 @@ model CashfreeOrder {
   @@map("cashfree_orders")
 }
 
+/// Audit when user accepts the digital declaration (IP + time for compliance).
+model DigitalDeclarationAudit {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  regNo      String?
+  ipAddress  String?
+  context    String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("digital_declaration_audits")
+}
+
+/// Hold & Earn application (fund choice, lock-in, amount).
+model HoldEarnRequest {
+  id             Int      @id @default(autoincrement())
+  regNo          String
+  amount         Decimal  @db.Decimal(14, 2)
+  fundSource     String
+  lockMonths     Int
+  agreementDate  DateTime?
+  status         String   @default("pending")
+  createdAt      DateTime @default(now())
+
+  @@map("hold_earn_requests")
+}
+
