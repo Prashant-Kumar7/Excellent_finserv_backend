@@ -159,6 +159,44 @@ function ledgerTs(d: Date | null | undefined): string | null {
   return d ? d.toISOString() : null;
 }
 
+function roundMoney(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+/** Adds debit_amount, credit_amount, balance_after (running total, oldest→newest). */
+function enrichLedgerRowsWithDebitCreditBalance(rows: Record<string, unknown>[]) {
+  if (rows.length === 0) return;
+  const asc = [...rows].sort((a, b) => {
+    const ta = a.created_at ? new Date(String(a.created_at)).getTime() : 0;
+    const tb = b.created_at ? new Date(String(b.created_at)).getTime() : 0;
+    if (ta !== tb) return ta - tb;
+    return String(a.ledger_id ?? "").localeCompare(String(b.ledger_id ?? ""));
+  });
+  let running = 0;
+  const byLedger = new Map<string, { debit: number | null; credit: number | null; balance: number }>();
+  for (const r of asc) {
+    const amt = ledgerNum(r.amount);
+    running += amt;
+    const debit = amt < 0 ? roundMoney(Math.abs(amt)) : null;
+    const credit = amt > 0 ? roundMoney(amt) : null;
+    const lid = String(r.ledger_id ?? `w_${r.id}`);
+    byLedger.set(lid, {
+      debit,
+      credit,
+      balance: roundMoney(running)
+    });
+  }
+  for (const r of rows) {
+    const lid = String(r.ledger_id ?? `w_${r.id}`);
+    const e = byLedger.get(lid);
+    if (e) {
+      r.debit_amount = e.debit;
+      r.credit_amount = e.credit;
+      r.balance_after = e.balance;
+    }
+  }
+}
+
 /** Merged audit trail: income wallet, bank wallet, deposit requests, coin wallet, online (Cashfree) payments, mobile recharge queue. */
 export async function buildFullTransactionLedger(regNo: string) {
   const [wallets, banks, deposits, coins, cfOrders, rechargePending] = await Promise.all([
@@ -337,6 +375,8 @@ export async function buildFullTransactionLedger(regNo: string) {
     });
   }
 
+  enrichLedgerRowsWithDebitCreditBalance(rows);
+
   rows.sort((a, b) => {
     const ta = a.created_at ? new Date(String(a.created_at)).getTime() : 0;
     const tb = b.created_at ? new Date(String(b.created_at)).getTime() : 0;
@@ -378,8 +418,37 @@ export async function walletHistory(req: AuthenticatedRequest, res: Response) {
   }
 
   try {
-    const rows = await prisma.wallet.findMany({
+    const raw = await prisma.wallet.findMany({
       where: { regNo: user.regNo, ...(comment ? { comment } : {}) }
+    });
+    const rows: Record<string, unknown>[] = raw.map((w) => ({
+      ledger_id: `w_${w.id}`,
+      ledger_source: "income_wallet",
+      id: w.id,
+      regNo: w.regNo,
+      amount: ledgerNum(w.amount),
+      comment: w.comment ?? "",
+      created_at: ledgerTs(w.created_at),
+      updated_at: ledgerTs(w.updated_at),
+      status: w.status ?? null,
+      txn_type: w.txn_type ?? null,
+      level: w.level ?? null,
+      gst: ledgerNum(w.gst),
+      tds: ledgerNum(w.tds),
+      amount_to_pay: ledgerNum(w.amount_to_pay),
+      service_charge: ledgerNum(w.service_charge),
+      source_id: w.source_id != null ? String(w.source_id) : null,
+      payment_method: null,
+      txn: null,
+      total_amount: null,
+      admin_charge: null,
+      deposit_principal: null
+    }));
+    enrichLedgerRowsWithDebitCreditBalance(rows);
+    rows.sort((a, b) => {
+      const ta = a.created_at ? new Date(String(a.created_at)).getTime() : 0;
+      const tb = b.created_at ? new Date(String(b.created_at)).getTime() : 0;
+      return tb - ta;
     });
     const userForClient = (await getUserForClientById(user.id)) ?? {
       id: user.id,
