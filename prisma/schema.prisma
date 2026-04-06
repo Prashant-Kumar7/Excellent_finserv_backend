@@ -451,6 +451,12 @@ model HoldEarnRequest {
   fundSource     String
   lockMonths     Int
   agreementDate  DateTime?
+  /// Whether the user asked to auto-renew the lock at maturity.
+  autoRenew      Boolean  @default(false)
+  /// Reward frequency label, e.g. "daily" or "monthly".
+  rewardFrequency String  @default("monthly")
+  /// Last time rewards were applied for this lock (for principal-only accrual).
+  lastRewardAt   DateTime?
   status         String   @default("pending")
   createdAt      DateTime @default(now())
 

@@ -191,6 +191,10 @@ export async function holdEarnSubmit(req: AuthenticatedRequest, res: Response) {
   const fundSource = String(raw.fund_source ?? "").trim();
   const lockMonths = Number(raw.lock_months);
   const amountNum = Number(raw.amount);
+  const autoRenew = String(raw.auto_renew ?? "").trim().toLowerCase() === "true";
+  const rewardFrequencyRaw = String(raw.reward_frequency ?? "").trim().toLowerCase();
+  const rewardFrequency =
+    rewardFrequencyRaw === "daily" || rewardFrequencyRaw === "monthly" ? rewardFrequencyRaw : "monthly";
   let agreementDate: Date | null = null;
   const adRaw = raw.agreement_date;
   if (typeof adRaw === "string" && adRaw.length > 0) {
@@ -206,6 +210,9 @@ export async function holdEarnSubmit(req: AuthenticatedRequest, res: Response) {
   if (!Number.isFinite(amountNum) || amountNum <= 0) {
     return res.status(422).json({ status: false, message: "Valid amount required" });
   }
+  if (amountNum < 10000) {
+    return res.status(422).json({ status: false, message: "Minimum Hold & Earn amount is 10000" });
+  }
   await prisma.holdEarnRequest.create({
     data: {
       regNo: user.regNo,
@@ -213,6 +220,9 @@ export async function holdEarnSubmit(req: AuthenticatedRequest, res: Response) {
       fundSource,
       lockMonths,
       agreementDate,
+      autoRenew,
+      rewardFrequency,
+      lastRewardAt: null,
       status: "pending"
     }
   });
