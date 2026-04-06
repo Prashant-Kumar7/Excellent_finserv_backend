@@ -434,8 +434,11 @@ model DigitalDeclarationAudit {
   id         Int      @id @default(autoincrement())
   userId     Int
   regNo      String?
+  agreed     Boolean  @default(true)
   ipAddress  String?
   context    String?
+  declarationVersion String? @default("v1")
+  fullTextSnapshot   String?
   createdAt  DateTime @default(now())
 
   @@index([userId])

@@ -114,6 +114,7 @@ protectedUserRouter.post("/tender_list", tenderList);
 protectedUserRouter.post("/dashboard", dashboard);
 protectedUserRouter.post("/mobile-recharge-request", mobileRechargeRequest);
 protectedUserRouter.post("/digital-declaration-accept", digitalDeclarationAccept);
+protectedUserRouter.post("/declaration/accept", digitalDeclarationAccept);
 protectedUserRouter.post("/hold-earn-submit", holdEarnSubmit);
 protectedUserRouter.post("/hold-earn-lock", holdEarnLock);
 protectedUserRouter.post("/hold-earn-withdraw", holdEarnWithdraw);

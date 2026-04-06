@@ -165,21 +165,65 @@ export async function digitalDeclarationAccept(req: AuthenticatedRequest, res: R
     return res.status(401).json({ status: false, message: "Invalid or expired token" });
   }
   const raw = req.body as Record<string, unknown>;
+  const requestedUserId = Number(raw.userId);
+  const agreed =
+    raw.agreed === true ||
+    String(raw.agreed ?? "").trim().toLowerCase() === "true" ||
+    String(raw.agreed ?? "").trim() === "1";
   const context = String(raw.context ?? "hold_earn").trim() || "hold_earn";
+  const declarationVersion = String(raw.declarationVersion ?? "v1").trim() || "v1";
+  const fullTextSnapshotRaw = String(raw.fullTextSnapshot ?? "").trim();
+  if (!Number.isFinite(requestedUserId) || requestedUserId <= 0) {
+    return res.status(422).json({ success: false, status: false, message: "Valid userId is required." });
+  }
+  if (requestedUserId !== user.id) {
+    return res.status(403).json({ success: false, status: false, message: "userId mismatch for authenticated user." });
+  }
+  if (!agreed) {
+    return res.status(422).json({ success: false, status: false, message: "agreed must be true." });
+  }
   const ip = clientIp(req);
   await prisma.digitalDeclarationAudit.create({
     data: {
       userId: user.id,
       regNo: user.regNo ?? null,
       ipAddress: ip.length > 0 ? ip : null,
-      context
+      context,
+      agreed: true,
+      declarationVersion,
+      fullTextSnapshot: fullTextSnapshotRaw.length > 0 ? fullTextSnapshotRaw : null,
     }
   });
   return res.json({
+    success: true,
     status: true,
-    message: "Declaration recorded.",
-    data: { agreed_at: new Date().toISOString() }
+    message: "Declaration accepted",
+    data: {
+      userId: user.id,
+      agreed: true,
+      context,
+      ipAddress: ip.length > 0 ? ip : null,
+      timestamp: new Date().toISOString(),
+      declarationVersion
+    }
   });
+}
+
+async function hasRecentDeclarationAcceptance(userId: number, context: string, withinMinutes = 15): Promise<boolean> {
+  const cutoff = new Date(Date.now() - withinMinutes * 60 * 1000);
+  const row = await prisma.digitalDeclarationAudit.findFirst({
+    where: {
+      userId,
+      context,
+      agreed: true,
+      createdAt: {
+        gte: cutoff,
+      },
+    },
+    select: { id: true },
+    orderBy: { createdAt: "desc" },
+  });
+  return Boolean(row);
 }
 
 /** Queues a Hold & Earn application for ops / future payment integration. */
@@ -1818,6 +1862,14 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
 
   try {
     if (purpose === "wallet_deposit") {
+      const hasDeclaration = await hasRecentDeclarationAcceptance(user.id, "wallet_deposit");
+      if (!hasDeclaration) {
+        return res.status(403).json({
+          status: false,
+          success: false,
+          message: "Digital Declaration acceptance is required before payment."
+        });
+      }
       const amount = Number(body.amount);
       if (!Number.isFinite(amount) || amount <= 0) {
         return res.status(422).json({ status: false, v_errors: { amount: ["Amount is required."] } });
