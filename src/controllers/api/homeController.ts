@@ -209,23 +209,6 @@ export async function digitalDeclarationAccept(req: AuthenticatedRequest, res: R
   });
 }
 
-async function hasRecentDeclarationAcceptance(userId: number, context: string, withinMinutes = 15): Promise<boolean> {
-  const cutoff = new Date(Date.now() - withinMinutes * 60 * 1000);
-  const row = await prisma.digitalDeclarationAudit.findFirst({
-    where: {
-      userId,
-      context,
-      agreed: true,
-      createdAt: {
-        gte: cutoff,
-      },
-    },
-    select: { id: true },
-    orderBy: { createdAt: "desc" },
-  });
-  return Boolean(row);
-}
-
 /** Queues a Hold & Earn application for ops / future payment integration. */
 export async function holdEarnSubmit(req: AuthenticatedRequest, res: Response) {
   const user = req.user;
@@ -1862,14 +1845,6 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
 
   try {
     if (purpose === "wallet_deposit") {
-      const hasDeclaration = await hasRecentDeclarationAcceptance(user.id, "wallet_deposit");
-      if (!hasDeclaration) {
-        return res.status(403).json({
-          status: false,
-          success: false,
-          message: "Digital Declaration acceptance is required before payment."
-        });
-      }
       const amount = Number(body.amount);
       if (!Number.isFinite(amount) || amount <= 0) {
         return res.status(422).json({ status: false, v_errors: { amount: ["Amount is required."] } });
