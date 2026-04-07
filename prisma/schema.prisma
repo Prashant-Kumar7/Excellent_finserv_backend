@@ -380,6 +380,13 @@ model Loan {
   total_fee  Decimal?
   status     String?
   remarks    String?
+  /// Business-facing application reference (shown in profile table).
+  application_id   String?
+  bank_or_nbfc     String?
+  login_date       DateTime?
+  approved_amount  Decimal? @db.Decimal(14, 2)
+  disbursed_amount Decimal? @db.Decimal(14, 2)
+  total_incentive  Decimal? @db.Decimal(14, 2)
   created_at DateTime?
   updated_at DateTime?
 
@@ -398,6 +405,16 @@ model Insurance {
   insurance_type String?
   vehicle_number String?
   status         String?
+  application_id   String?
+  provider         String?
+  login_date       DateTime?
+  approved_amount  Decimal? @db.Decimal(14, 2)
+  disbursed_amount Decimal? @db.Decimal(14, 2)
+  /// When set (e.g. "Pending"), UI shows this instead of disbursed_amount.
+  disbursed_display String?
+  total_incentive  Decimal? @db.Decimal(14, 2)
+  /// When set (e.g. "TBD"), UI shows this instead of total_incentive.
+  incentive_display String?
   created_at     DateTime?
   updated_at     DateTime?
 

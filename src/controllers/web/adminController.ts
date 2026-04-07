@@ -379,7 +379,18 @@ export async function loanUpdate(req: AdminRequest, res: Response) {
   if ("status" in body) data.status = body.status;
   if ("amount" in body) data.amount = body.amount ? Number(body.amount) : 0;
   if ("remarks" in body) data.remarks = body.remarks as string | null;
+  if ("application_id" in body) data.application_id = body.application_id as string | null;
+  if ("bank_or_nbfc" in body) data.bank_or_nbfc = body.bank_or_nbfc as string | null;
+  if ("login_date" in body && body.login_date) data.login_date = new Date(String(body.login_date));
+  if ("approved_amount" in body && body.approved_amount !== undefined && body.approved_amount !== "")
+    data.approved_amount = Number(body.approved_amount);
+  if ("disbursed_amount" in body && body.disbursed_amount !== undefined && body.disbursed_amount !== "")
+    data.disbursed_amount = Number(body.disbursed_amount);
+  if ("total_incentive" in body && body.total_incentive !== undefined && body.total_incentive !== "")
+    data.total_incentive = Number(body.total_incentive);
+  if ("loan_type" in body) data.loan_type = body.loan_type as string | null;
   if (!Object.keys(data).length) return res.status(422).json({ status: "error", message: "No fields to update" });
+  data.updated_at = new Date();
   await prisma.loan.update({ where: { id }, data: data as any });
   return res.json({ status: "done", message: "Loan updated" });
 }

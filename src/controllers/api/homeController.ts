@@ -1208,6 +1208,8 @@ async function fulfillLoanFromCashfree(regNo: string, meta: Record<string, unkno
   if (existing) return;
 
   const totalFee = 590;
+  const t = new Date();
+  const applicationId = `LN${regNo.replace(/\W/g, "")}${t.getTime()}`.slice(0, 48);
   await prisma.loan.create({
     data: {
       regNo,
@@ -1222,7 +1224,11 @@ async function fulfillLoanFromCashfree(regNo: string, meta: Record<string, unkno
       fee: 500,
       fee_gst: 90,
       total_fee: totalFee,
-      remarks: `cashfree_order:${cashfreeOrderId}`
+      remarks: `cashfree_order:${cashfreeOrderId}`,
+      application_id: applicationId,
+      login_date: t,
+      created_at: t,
+      updated_at: t
     }
   });
 }
@@ -1750,6 +1756,8 @@ export async function loanRequest(req: AuthenticatedRequest, res: Response) {
     return res.status(400).json({ status: false, message: "Not Enough Balance" });
   }
 
+  const nowLoan = new Date();
+  const applicationId = `LN${user.regNo.replace(/\W/g, "")}${nowLoan.getTime()}`.slice(0, 48);
   await prisma.$transaction([
     prisma.loan.create({
       data: {
@@ -1764,7 +1772,11 @@ export async function loanRequest(req: AuthenticatedRequest, res: Response) {
         m_name: (body.m_name as string | null) ?? null,
         fee: 500,
         fee_gst: 90,
-        total_fee: totalFee
+        total_fee: totalFee,
+        application_id: applicationId,
+        login_date: nowLoan,
+        created_at: nowLoan,
+        updated_at: nowLoan
       }
     }),
     prisma.bank.create({
@@ -1779,28 +1791,7 @@ export async function loanHistory(req: AuthenticatedRequest, res: Response) {
   const user = req.user;
   if (!user) return res.status(401).json({ status: false, message: "Invalid or expired token" });
   const rows = await prisma.loan.findMany({ where: { regNo: user.regNo }, orderBy: { id: "desc" } });
-  if (!rows.length) return res.json({ status: false, message: "No loan history found" });
-  const out = rows.map((r, index) => {
-    const status = String(r.status ?? "").toLowerCase();
-    const baseAmount = Number(r.amount ?? 0);
-    const approvedAmount =
-      status === "approved" || status === "disbursed" ? baseAmount : 0;
-    const disbursedAmount = status === "disbursed" ? baseAmount : 0;
-    return {
-      ...r,
-      s_no: index + 1,
-      application_id: `APP${r.id}`,
-      customer_name: r.name ?? "",
-      mobile_number: r.mobile ?? "",
-      product_type: r.loan_type ?? "",
-      bank_nbfc: "",
-      login_date: r.created_at ?? null,
-      approved_amount: approvedAmount,
-      disbursed_amount: disbursedAmount,
-      total_incentive: 0
-    };
-  });
-  return res.json({ status: true, data: out });
+  return res.json({ status: true, data: rows });
 }
 
 export async function insuranceRequest(req: AuthenticatedRequest, res: Response) {
@@ -1814,6 +1805,8 @@ export async function insuranceRequest(req: AuthenticatedRequest, res: Response)
   if (pending) {
     return res.status(409).json({ status: false, message: "Your previous insurance request is still pending" });
   }
+  const nowIns = new Date();
+  const insAppId = `INS${user.regNo.replace(/\W/g, "")}${nowIns.getTime()}`.slice(0, 48);
   await prisma.insurance.create({
     data: {
       regNo: user.regNo,
@@ -1825,7 +1818,11 @@ export async function insuranceRequest(req: AuthenticatedRequest, res: Response)
       status: "pending",
       l_name: (body.l_name as string | null) ?? null,
       m_name: (body.m_name as string | null) ?? null,
-      vehicle_number: (body.vehicle_number as string | null) ?? null
+      vehicle_number: (body.vehicle_number as string | null) ?? null,
+      application_id: insAppId,
+      login_date: nowIns,
+      created_at: nowIns,
+      updated_at: nowIns
     }
   });
   return res.json({ status: true, message: "Loan request submitted successfully" });
@@ -1835,28 +1832,7 @@ export async function insuranceHistory(req: AuthenticatedRequest, res: Response)
   const user = req.user;
   if (!user) return res.status(401).json({ status: false, message: "Invalid or expired token" });
   const rows = await prisma.insurance.findMany({ where: { regNo: user.regNo }, orderBy: { id: "desc" } });
-  if (!rows.length) return res.json({ status: false, message: "No insurance history found" });
-  const out = rows.map((r, index) => {
-    const status = String(r.status ?? "").toLowerCase();
-    const baseAmount = Number(r.amount ?? 0);
-    const approvedAmount =
-      status === "approved" || status === "disbursed" ? baseAmount : 0;
-    const disbursedAmount = status === "disbursed" ? baseAmount : 0;
-    return {
-      ...r,
-      s_no: index + 1,
-      application_id: `APP${r.id}`,
-      customer_name: r.name ?? "",
-      mobile_number: r.mobile ?? "",
-      product_type: r.insurance_type ?? "",
-      provider: "",
-      login_date: r.created_at ?? null,
-      approved_amount: approvedAmount,
-      disbursed_amount: disbursedAmount,
-      total_incentive: 0
-    };
-  });
-  return res.json({ status: true, data: out });
+  return res.json({ status: true, data: rows });
 }
 
 export async function cibilSubmit(req: AuthenticatedRequest, res: Response) {
