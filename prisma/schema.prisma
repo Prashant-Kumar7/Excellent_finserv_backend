@@ -12,6 +12,7 @@ model User {
   regNo      String?  @unique
   name       String?
   last_name  String?
+  father_name String?
   email      String?  @unique
   mobile     String?  @unique
   password   String?
@@ -26,6 +27,16 @@ model User {
   aadhar_front   String?
   aadhar_back    String?
   pan_image      String?
+  current_house_no String?
+  current_village  String?
+  current_city     String?
+  current_state    String?
+  current_pincode  String?
+  permanent_house_no String?
+  permanent_village  String?
+  permanent_city     String?
+  permanent_state    String?
+  permanent_pincode  String?
   buyer      Int?
   seller     Int?
   status     Int?

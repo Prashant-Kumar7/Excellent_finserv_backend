@@ -35,6 +35,7 @@ async function getUserForClientById(userId: number) {
       id: true,
       name: true,
       last_name: true,
+      father_name: true,
       mobile: true,
       email: true,
       created_at: true,
@@ -51,7 +52,17 @@ async function getUserForClientById(userId: number) {
       pan_number: true,
       aadhar_front: true,
       aadhar_back: true,
-      pan_image: true
+      pan_image: true,
+      current_house_no: true,
+      current_village: true,
+      current_city: true,
+      current_state: true,
+      current_pincode: true,
+      permanent_house_no: true,
+      permanent_village: true,
+      permanent_city: true,
+      permanent_state: true,
+      permanent_pincode: true
     }
   });
   if (!currentUser) return null;
@@ -1429,6 +1440,7 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
 
   const data: {
     name?: string;
+    father_name?: string | null;
     email?: string | null;
     aadhar_number?: string | null;
     pan_number?: string | null;
@@ -1436,6 +1448,16 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
     bank_name?: string | null;
     ifsc?: string | null;
     upi_id?: string | null;
+    current_house_no?: string | null;
+    current_village?: string | null;
+    current_city?: string | null;
+    current_state?: string | null;
+    current_pincode?: string | null;
+    permanent_house_no?: string | null;
+    permanent_village?: string | null;
+    permanent_city?: string | null;
+    permanent_state?: string | null;
+    permanent_pincode?: string | null;
     user_image?: string;
     aadhar_front?: string;
     aadhar_back?: string;
@@ -1445,6 +1467,9 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
 
   const name = multipartString(body, "name");
   if (name !== undefined) data.name = name;
+
+  const fatherName = multipartString(body, "father_name");
+  if (fatherName !== undefined) data.father_name = fatherName;
 
   const email = multipartString(body, "email");
   if (email !== undefined) data.email = email;
@@ -1466,6 +1491,28 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
 
   const upi = multipartString(body, "upi_id");
   if (upi !== undefined) data.upi_id = upi;
+
+  const currentHouseNo = multipartString(body, "current_house_no");
+  if (currentHouseNo !== undefined) data.current_house_no = currentHouseNo;
+  const currentVillage = multipartString(body, "current_village");
+  if (currentVillage !== undefined) data.current_village = currentVillage;
+  const currentCity = multipartString(body, "current_city");
+  if (currentCity !== undefined) data.current_city = currentCity;
+  const currentState = multipartString(body, "current_state");
+  if (currentState !== undefined) data.current_state = currentState;
+  const currentPincode = multipartString(body, "current_pincode");
+  if (currentPincode !== undefined) data.current_pincode = currentPincode;
+
+  const permanentHouseNo = multipartString(body, "permanent_house_no");
+  if (permanentHouseNo !== undefined) data.permanent_house_no = permanentHouseNo;
+  const permanentVillage = multipartString(body, "permanent_village");
+  if (permanentVillage !== undefined) data.permanent_village = permanentVillage;
+  const permanentCity = multipartString(body, "permanent_city");
+  if (permanentCity !== undefined) data.permanent_city = permanentCity;
+  const permanentState = multipartString(body, "permanent_state");
+  if (permanentState !== undefined) data.permanent_state = permanentState;
+  const permanentPincode = multipartString(body, "permanent_pincode");
+  if (permanentPincode !== undefined) data.permanent_pincode = permanentPincode;
 
   const userImage = files.find((f) => f.fieldname === "user_image");
   if (userImage?.buffer?.length) {
