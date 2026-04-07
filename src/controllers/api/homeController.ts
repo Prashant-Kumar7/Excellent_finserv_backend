@@ -1780,7 +1780,27 @@ export async function loanHistory(req: AuthenticatedRequest, res: Response) {
   if (!user) return res.status(401).json({ status: false, message: "Invalid or expired token" });
   const rows = await prisma.loan.findMany({ where: { regNo: user.regNo }, orderBy: { id: "desc" } });
   if (!rows.length) return res.json({ status: false, message: "No loan history found" });
-  return res.json({ status: true, data: rows });
+  const out = rows.map((r, index) => {
+    const status = String(r.status ?? "").toLowerCase();
+    const baseAmount = Number(r.amount ?? 0);
+    const approvedAmount =
+      status === "approved" || status === "disbursed" ? baseAmount : 0;
+    const disbursedAmount = status === "disbursed" ? baseAmount : 0;
+    return {
+      ...r,
+      s_no: index + 1,
+      application_id: `APP${r.id}`,
+      customer_name: r.name ?? "",
+      mobile_number: r.mobile ?? "",
+      product_type: r.loan_type ?? "",
+      bank_nbfc: "",
+      login_date: r.created_at ?? null,
+      approved_amount: approvedAmount,
+      disbursed_amount: disbursedAmount,
+      total_incentive: 0
+    };
+  });
+  return res.json({ status: true, data: out });
 }
 
 export async function insuranceRequest(req: AuthenticatedRequest, res: Response) {
@@ -1816,7 +1836,27 @@ export async function insuranceHistory(req: AuthenticatedRequest, res: Response)
   if (!user) return res.status(401).json({ status: false, message: "Invalid or expired token" });
   const rows = await prisma.insurance.findMany({ where: { regNo: user.regNo }, orderBy: { id: "desc" } });
   if (!rows.length) return res.json({ status: false, message: "No insurance history found" });
-  return res.json({ status: true, data: rows });
+  const out = rows.map((r, index) => {
+    const status = String(r.status ?? "").toLowerCase();
+    const baseAmount = Number(r.amount ?? 0);
+    const approvedAmount =
+      status === "approved" || status === "disbursed" ? baseAmount : 0;
+    const disbursedAmount = status === "disbursed" ? baseAmount : 0;
+    return {
+      ...r,
+      s_no: index + 1,
+      application_id: `APP${r.id}`,
+      customer_name: r.name ?? "",
+      mobile_number: r.mobile ?? "",
+      product_type: r.insurance_type ?? "",
+      provider: "",
+      login_date: r.created_at ?? null,
+      approved_amount: approvedAmount,
+      disbursed_amount: disbursedAmount,
+      total_incentive: 0
+    };
+  });
+  return res.json({ status: true, data: out });
 }
 
 export async function cibilSubmit(req: AuthenticatedRequest, res: Response) {
