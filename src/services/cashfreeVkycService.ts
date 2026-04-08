@@ -60,9 +60,9 @@ async function requestOAuthToken(): Promise<CachedToken> {
 
   try {
     const url = "/oauth/token";
+    // Cashfree VRS OAuth expects credentials in headers (x-client-id/secret).
+    // (Matches the existing Secure ID implementation in `shared/cashfreeSecureId.ts`.)
     const body = {
-      client_id: clientId,
-      client_secret: clientSecret,
       grant_type: "client_credentials"
     };
 
@@ -70,7 +70,9 @@ async function requestOAuthToken(): Promise<CachedToken> {
       headers: {
         "Content-Type": "application/json",
         accept: "application/json",
-        "x-api-version": CF_VRS_API_VERSION
+        "x-api-version": CF_VRS_API_VERSION,
+        "x-client-id": clientId,
+        "x-client-secret": clientSecret
       }
     });
 
@@ -87,8 +89,16 @@ async function requestOAuthToken(): Promise<CachedToken> {
     cachedToken = token;
     return token;
   } catch (err) {
-    console.error("Cashfree VKYC getOAuthToken error", err);
-    throw new Error("Unable to obtain Cashfree VKYC token");
+    const e = err as AxiosError;
+    console.error("Cashfree VKYC getOAuthToken error", {
+      status: e.response?.status,
+      data: e.response?.data
+    });
+    const msg =
+      (e.response?.data as { message?: string } | undefined)?.message ??
+      e.message ??
+      "Unable to obtain Cashfree VKYC token";
+    throw new Error(msg);
   }
 }
 
