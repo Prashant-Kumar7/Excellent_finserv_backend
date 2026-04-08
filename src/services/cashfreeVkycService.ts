@@ -32,8 +32,9 @@ function cashfreeBaseUrl(): string {
   return env === "PRODUCTION" ? "https://api.cashfree.com" : "https://sandbox.cashfree.com";
 }
 
-// Keep consistent with existing Secure ID (Verification Suite) integration.
-const CF_VRS_API_VERSION = "2023-12-18";
+// Cashfree expects a specific VRS API version header.
+// Error from Cashfree: "provided x-api-version should be 2024-12-01"
+const CF_VRS_API_VERSION = "2024-12-01";
 
 const vkycClient: AxiosInstance = axios.create({
   // Cashfree Verification Suite base path is `/verification`
