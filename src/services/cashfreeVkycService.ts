@@ -32,8 +32,12 @@ function cashfreeBaseUrl(): string {
   return env === "PRODUCTION" ? "https://api.cashfree.com" : "https://sandbox.cashfree.com";
 }
 
+// Keep consistent with existing Secure ID (Verification Suite) integration.
+const CF_VRS_API_VERSION = "2023-12-18";
+
 const vkycClient: AxiosInstance = axios.create({
-  baseURL: `${cashfreeBaseUrl()}/vrs`,
+  // Cashfree Verification Suite base path is `/verification`
+  baseURL: `${cashfreeBaseUrl()}/verification`,
   timeout: 15000
 });
 
@@ -63,7 +67,11 @@ async function requestOAuthToken(): Promise<CachedToken> {
     };
 
     const res = await vkycClient.post<OAuthTokenResponse>(url, body, {
-      headers: { "Content-Type": "application/json" }
+      headers: {
+        "Content-Type": "application/json",
+        accept: "application/json",
+        "x-api-version": CF_VRS_API_VERSION
+      }
     });
 
     const data = res.data;
@@ -104,7 +112,9 @@ async function authorizedPost<T>(
     const res = await vkycClient.post<T>(path, body, {
       headers: {
         Authorization: `Bearer ${token.accessToken}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        accept: "application/json",
+        "x-api-version": CF_VRS_API_VERSION
       }
     });
     console.log(`Cashfree VKYC POST ${path} success`, {
