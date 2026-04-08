@@ -1,0 +1,509 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         Int      @id @default(autoincrement())
+  regNo      String?  @unique
+  name       String?
+  last_name  String?
+  father_name String?
+  email      String?  @unique
+  mobile     String?  @unique
+  password   String?
+  sponser_id String?
+  bank_name  String?
+  ifsc        String?
+  upi_id      String?
+  account_number String?
+  user_image     String?
+  aadhar_number  String?
+  pan_number     String?
+  aadhar_front   String?
+  aadhar_back    String?
+  pan_image      String?
+  current_house_no String?
+  current_village  String?
+  current_city     String?
+  current_state    String?
+  current_pincode  String?
+  permanent_house_no String?
+  permanent_village  String?
+  permanent_city     String?
+  permanent_state    String?
+  permanent_pincode  String?
+  buyer      Int?
+  seller     Int?
+  status     Int?
+  kyc_status Int?
+  vkyc_verification_id String?
+  vkyc_status          String?
+  vkyc_completed_at    DateTime?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("users")
+}
+
+model Admin {
+  id         Int      @id @default(autoincrement())
+  name       String?
+  email      String?  @unique
+  password   String?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("admins")
+}
+
+model Otp {
+  id         Int      @id @default(autoincrement())
+  mobile     String?
+  otp        String?
+  action     String?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("otps")
+}
+
+model Category {
+  id         Int      @id @default(autoincrement())
+  name       String?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("categories")
+}
+
+model SubCategory {
+  id          Int      @id @default(autoincrement())
+  category_id Int?
+  name        String?
+  created_at  DateTime?
+  updated_at  DateTime?
+
+  @@map("sub_categories")
+}
+
+model State {
+  id         Int      @id @default(autoincrement())
+  region_id  Int?
+  name       String?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("states")
+}
+
+model City {
+  id         Int      @id @default(autoincrement())
+  state_id   Int?
+  name       String?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("cities")
+}
+
+model Unit {
+  id         Int      @id @default(autoincrement())
+  name       String?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("units")
+}
+
+model Region {
+  id         Int      @id @default(autoincrement())
+  name       String?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("regions")
+}
+
+model Product {
+  id                Int      @id @default(autoincrement())
+  user_id           Int?
+  category_id       Int?
+  sub_category_id   Int?
+  product_name      String?
+  description       String?
+  stock             Int?
+  mrp               Decimal? @db.Decimal(10, 2)
+  specifications    String?
+  packaging_details String?
+  moq               String?
+  payment_terms     String?
+  delivery_info     String?
+  certifications    String?
+  images            Json?
+  video             String?
+  status            String?
+  created_at        DateTime?
+  updated_at        DateTime?
+
+  @@map("products")
+}
+
+model RFQ {
+  id            Int      @id @default(autoincrement())
+  buyer_id      Int?
+  seller_id     Int?
+  region_id     Int?
+  state_id      Int?
+  city_id       Int?
+  product_id    Int?
+  unit_name     String?
+  delivery_date String?
+  description   String?
+  mrp           Decimal? @db.Decimal(10, 2)
+  created_at    DateTime?
+  updated_at    DateTime?
+
+  @@map("r_f_q_s")
+}
+
+model Tender {
+  id                    Int      @id @default(autoincrement())
+  category_id           Int?
+  sub_category_id       Int?
+  city_id               Int?
+  state_id              Int?
+  region_id             Int?
+  user_id               Int?
+  tender_type           String?
+  product_name          String?
+  tender_name           String?
+  tender_total          Decimal? @db.Decimal(10, 2)
+  tender_start_date     DateTime?
+  tender_end_date       DateTime?
+  tender_description    String?
+  expected_product_rate Decimal? @db.Decimal(10, 2)
+  product_unit_name     String?
+  tender_validity_date  DateTime?
+  tender_document_type  String?
+  tender_document       String?
+  tender_quantity       Decimal?
+  tender_status         String?
+  created_at            DateTime?
+  updated_at            DateTime?
+
+  @@map("tenders")
+}
+
+model TenderWishlist {
+  id         Int      @id @default(autoincrement())
+  user_id    Int?
+  tender_id  Int?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("tender_wishlists")
+}
+
+model TenderInterest {
+  id         Int      @id @default(autoincrement())
+  user_id    Int?
+  tender_id  Int?
+  message    String?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("tender_interests")
+}
+
+model TenderParticipate {
+  id                               Int      @id @default(autoincrement())
+  user_id                          Int?
+  tender_id                        Int?
+  dispatched_location              String?
+  paid_emd                         Decimal?
+  unit_name                        String?
+  offer_price                      Decimal?
+  offer_quantity                   Int?
+  delivery_period                  String?
+  company_brochure_document        String?
+  technical_specification_document String?
+  mode_of_transport                String?
+  remarks                          String?
+  payment_mode                     String?
+  order_id                         String?  @unique
+  payment_id                       String?  @unique
+  created_at                       DateTime?
+  updated_at                       DateTime?
+
+  @@map("tender_participates")
+}
+
+model Deposit {
+  id           Int      @id @default(autoincrement())
+  regNo        String?
+  amount       Decimal?
+  payment_method String?
+  slip         String?
+  status       String?
+  txn          String?  @unique
+  total_amount Decimal?
+  gst          Decimal?
+  admin_charge Decimal?
+  cf_payment_id String?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  @@map("deposits")
+}
+
+model SupportTicket {
+  id         Int      @id @default(autoincrement())
+  regNo      String?
+  subject    String?
+  message    String?
+  status     String?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("support_tickets")
+}
+
+model Coin {
+  id         Int      @id @default(autoincrement())
+  regNo      String?
+  amount     Decimal?
+  comment    String?
+  created_at DateTime? @default(now())
+  updated_at DateTime? @updatedAt
+
+  @@map("coins")
+}
+
+model Wallet {
+  id            Int      @id @default(autoincrement())
+  regNo         String?
+  amount        Decimal?
+  status        String?
+  comment       String?
+  txn_type      String?
+  tds           Decimal?
+  service_charge Decimal?
+  gst           Decimal?
+  amount_to_pay Decimal?
+  level         Int?
+  source_id     Int?
+  created_at    DateTime? @default(now())
+  updated_at    DateTime? @updatedAt
+
+  @@map("wallet")
+}
+
+model Bank {
+  id         Int      @id @default(autoincrement())
+  regNo      String?
+  amount     Decimal?
+  status     String?
+  comment    String?
+  txn_type   String?
+  created_at DateTime? @default(now())
+  updated_at DateTime? @updatedAt
+
+  @@map("bank")
+}
+
+model Package {
+  id           Int      @id @default(autoincrement())
+  regNo        String?
+  amount       Decimal?
+  status       String?
+  txn          String?
+  slip         String?
+  payment_method String?
+  gst          Decimal?
+  total_amount Decimal?
+  created_at   DateTime?
+  updated_at   DateTime?
+
+  @@map("packages")
+}
+
+model Perday {
+  id         Int      @id @default(autoincrement())
+  regNo      String?
+  amount     Decimal?
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("perday")
+}
+
+model Setting {
+  id                          Int      @id @default(autoincrement())
+  deposit_limit               Decimal?
+  deposit_admin_charge        Decimal?
+  deposit_gst                 Decimal?
+  income_wallet_withdraw_tds  Decimal?
+  income_wallet_withdraw_gst  Decimal?
+  service_charge              Decimal?
+  created_at                  DateTime?
+  updated_at                  DateTime?
+
+  @@map("settings")
+}
+
+/// Queued mobile recharges until the external recharge API is integrated.
+model MobileRechargeRequest {
+  id         Int      @id @default(autoincrement())
+  regNo      String
+  mobile     String
+  operator   String?
+  amount     Decimal
+  created_at DateTime @default(now())
+
+  @@map("mobile_recharge_requests")
+}
+
+model Loan {
+  id         Int      @id @default(autoincrement())
+  regNo      String?
+  name       String?
+  l_name     String?
+  m_name     String?
+  mobile     String?
+  pan_number String?
+  amount     Decimal?
+  loan_type  String?
+  fee        Decimal?
+  fee_gst    Decimal?
+  total_fee  Decimal?
+  status     String?
+  remarks    String?
+  /// Business-facing application reference (shown in profile table).
+  application_id   String?
+  bank_or_nbfc     String?
+  login_date       DateTime?
+  approved_amount  Decimal? @db.Decimal(14, 2)
+  disbursed_amount Decimal? @db.Decimal(14, 2)
+  total_incentive  Decimal? @db.Decimal(14, 2)
+  created_at DateTime?
+  updated_at DateTime?
+
+  @@map("loan")
+}
+
+model Insurance {
+  id             Int      @id @default(autoincrement())
+  regNo          String?
+  name           String?
+  l_name         String?
+  m_name         String?
+  mobile         String?
+  pan_number     String?
+  amount         Decimal?
+  insurance_type String?
+  vehicle_number String?
+  status         String?
+  application_id   String?
+  provider         String?
+  login_date       DateTime?
+  approved_amount  Decimal? @db.Decimal(14, 2)
+  disbursed_amount Decimal? @db.Decimal(14, 2)
+  /// When set (e.g. "Pending"), UI shows this instead of disbursed_amount.
+  disbursed_display String?
+  total_incentive  Decimal? @db.Decimal(14, 2)
+  /// When set (e.g. "TBD"), UI shows this instead of total_incentive.
+  incentive_display String?
+  created_at     DateTime?
+  updated_at     DateTime?
+
+  @@map("insurance")
+}
+
+model CibileReportRequest {
+  id            Int      @id @default(autoincrement())
+  regNo         String?
+  application_id String?
+  name          String?
+  l_name        String?
+  m_name        String?
+  mobile        String?
+  pan_number    String?
+  amount        Decimal?
+  gst           Decimal?
+  total_amount  Decimal?
+  status        String?
+  created_at    DateTime?
+  updated_at    DateTime?
+
+  @@map("cibile_report_request")
+}
+
+/// Tracks Cashfree PG orders for non-wallet flows (package, CIBIL, loan service fee).
+model CashfreeOrder {
+  id             Int      @id @default(autoincrement())
+  order_id       String   @unique
+  reg_no         String
+  purpose        String
+  order_amount   Decimal  @db.Decimal(12, 2)
+  currency       String   @default("INR")
+  status         String   @default("pending")
+  meta           Json?
+  cf_payment_id  String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@map("cashfree_orders")
+}
+
+/// Audit when user accepts the digital declaration (IP + time for compliance).
+model DigitalDeclarationAudit {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  regNo      String?
+  agreed     Boolean  @default(true)
+  ipAddress  String?
+  context    String?
+  declarationVersion String? @default("v1")
+  fullTextSnapshot   String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("digital_declaration_audits")
+}
+
+/// Hold & Earn application (fund choice, lock-in, amount).
+model HoldEarnRequest {
+  id             Int      @id @default(autoincrement())
+  regNo          String
+  amount         Decimal  @db.Decimal(14, 2)
+  fundSource     String
+  birthDate      DateTime?
+  lockMonths     Int
+  agreementDate  DateTime?
+  /// Whether the user asked to auto-renew the lock at maturity.
+  autoRenew      Boolean  @default(false)
+  /// Reward frequency label, e.g. "daily" or "monthly".
+  rewardFrequency String  @default("monthly")
+  /// Last time rewards were applied for this lock (for principal-only accrual).
+  lastRewardAt   DateTime?
+  status         String   @default("pending")
+  /// When the principal was locked (Pay Now).
+  lockedAt       DateTime?
+  /// When user withdrew (early or on maturity).
+  withdrawnAt    DateTime?
+  /// Early withdrawal fields (20% penalty on principal).
+  penaltyAmount  Decimal? @db.Decimal(14, 2)
+  tdsAmount      Decimal? @db.Decimal(14, 2)
+  gstAmount      Decimal? @db.Decimal(14, 2)
+  netAmount      Decimal? @db.Decimal(14, 2)
+  createdAt      DateTime @default(now())
+
+  @@map("hold_earn_requests")
+}
+
