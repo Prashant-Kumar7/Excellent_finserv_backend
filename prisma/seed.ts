@@ -118,7 +118,7 @@ async function main() {
       name: "Default",
       last_name: "Sponsor",
       email: "sponsor@example.com",
-      mobile: "8979512745",
+      mobile: "0123456789",
       buyer: 1,
       seller: 1,
       bank_name: "SBI",

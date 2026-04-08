@@ -252,14 +252,13 @@ export async function loginWithOtp(req: Request, res: Response) {
 }
 
 export async function registerWithOtp(req: Request, res: Response) {
-  const { mobile, otp, name, last_name: lastName, sponser_mobile: sponsorMobile, password } = req.body as {
-    mobile?: string;
-    otp?: string;
-    name?: string;
-    last_name?: string;
-    sponser_mobile?: string;
-    password?: string;
-  };
+  const body = req.body as Record<string, unknown>;
+  const mobile = readFormField(body, "mobile");
+  const otp = readFormField(body, "otp");
+  const name = readFormField(body, "name");
+  const lastName = readFormField(body, "last_name");
+  const sponsorMobile = readFormField(body, "sponser_mobile");
+  const password = readFormField(body, "password");
 
   if (
     !mobile ||
@@ -269,7 +268,7 @@ export async function registerWithOtp(req: Request, res: Response) {
     !name ||
     !lastName ||
     !sponsorMobile ||
-    !MOBILE_REGEX.test(sponsorMobile) ||
+    !/^[0-9]{10}$/.test(sponsorMobile) ||
     !password ||
     password.length < 6
   ) {
