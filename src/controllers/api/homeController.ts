@@ -1298,17 +1298,73 @@ export async function purchasePackageHistory(req: AuthenticatedRequest, res: Res
 }
 
 export async function bankWalletWithdraw(req: AuthenticatedRequest, res: Response) {
-  return res.status(422).json({
-    status: false,
-    message: "Withdrawals are allowed only from Reward Wallet.",
+  const user = req.user;
+  const amount = Number((req.body as { amount?: number | string }).amount);
+  if (!user) {
+    return res.status(401).json({ status: false, message: "Invalid or expired token" });
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return res.status(422).json({ status: false, v_errors: { amount: ["Amount is required."] } });
+  }
+  if (amount < 500 || amount % 500 !== 0) {
+    return res.status(422).json({
+      status: false,
+      message: "Minimum withdrawal is 500 and must be in multiples of 500.",
+    });
+  }
+
+  const bankRows = await prisma.bank.findMany({ where: { regNo: user.regNo } });
+  const available = bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+  if (available < amount) {
+    return res.status(400).json({ status: false, message: "Not Enough Balance" });
+  }
+
+  await prisma.bank.create({
+    data: {
+      regNo: user.regNo,
+      amount: -1 * amount,
+      comment: "withdraw",
+      txn_type: "debit",
+      status: "pending",
+    },
   });
+
+  return res.json({ status: true, message: "Withdrawal request submitted successfully" });
 }
 
 export async function incomeWalletWithdraw(req: AuthenticatedRequest, res: Response) {
-  return res.status(422).json({
-    status: false,
-    message: "Withdrawals are allowed only from Reward Wallet.",
+  const user = req.user;
+  const amount = Number((req.body as { amount?: number | string }).amount);
+  if (!user) {
+    return res.status(401).json({ status: false, message: "Invalid or expired token" });
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return res.status(422).json({ status: false, v_errors: { amount: ["Amount is required."] } });
+  }
+  if (amount < 500 || amount % 500 !== 0) {
+    return res.status(422).json({
+      status: false,
+      message: "Minimum withdrawal is 500 and must be in multiples of 500.",
+    });
+  }
+
+  const walletRows = await prisma.wallet.findMany({ where: { regNo: user.regNo } });
+  const available = walletRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+  if (available < amount) {
+    return res.status(400).json({ status: false, message: "Not Enough Balance" });
+  }
+
+  await prisma.wallet.create({
+    data: {
+      regNo: user.regNo,
+      amount: -1 * amount,
+      comment: "withdraw",
+      txn_type: "debit",
+      status: "pending",
+    },
   });
+
+  return res.json({ status: true, message: "Withdrawal request submitted successfully" });
 }
 
 export async function coinWalletWithdraw(req: AuthenticatedRequest, res: Response) {
