@@ -1397,6 +1397,8 @@ type SecureIdWebhookPayload = {
     status?: string;
     ref_id?: string | number;
     reference_id?: string | number;
+    completed_at?: string;
+    updated_at?: string;
   };
 };
 
@@ -1737,6 +1739,36 @@ export async function secureIdWebhook(req: Request, res: Response) {
     } else if (["FAILURE", "CONSENT_DENIED", "EXPIRED"].includes(status)) {
       await prisma.user.updateMany({ where: { regNo }, data: { kyc_status: 2, updated_at: new Date() } });
     }
+  } else if (eventType === "VKYC_STATUS_UPDATE") {
+    const status = String(payload.data?.status ?? "");
+    const normalized = status.trim().toLowerCase();
+    const completedAtRaw = (payload.data?.completed_at ?? payload.data?.updated_at) as string | undefined;
+    const updateData: Record<string, unknown> = {
+      vkyc_status: status || null,
+      updated_at: new Date()
+    };
+
+    if (verificationId) {
+      updateData.vkyc_verification_id = verificationId;
+    }
+
+    if (completedAtRaw) {
+      const dt = new Date(completedAtRaw);
+      if (!Number.isNaN(dt.getTime())) {
+        updateData.vkyc_completed_at = dt;
+      }
+    } else if (status === "SUCCESS") {
+      updateData.vkyc_completed_at = new Date();
+    }
+
+    // Keep existing Flutter KYC tick working (it currently reads `kyc_status`).
+    if (["success", "verified", "done"].includes(normalized)) {
+      updateData.kyc_status = 1;
+    } else if (["failed", "failure", "closed", "rejected", "consent_denied", "expired"].includes(normalized)) {
+      updateData.kyc_status = 2;
+    }
+
+    await prisma.user.updateMany({ where: { regNo }, data: updateData });
   }
   return res.json({ ok: true });
 }

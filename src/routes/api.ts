@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireGlobalApiKey } from "../shared/middleware/globalApiKey.js";
 import { requireUserAuth } from "../shared/middleware/userAuth.js";
+import { vkycRouter } from "./vkycRoutes.js";
 import {
   checkSponsor,
   login,
@@ -88,6 +89,9 @@ export const apiRouter = Router();
 // Cashfree webhook (no API key middleware in Laravel)
 apiRouter.post("/cashfree/webhook", cashfreeWebhook);
 apiRouter.post("/cashfree/secureid/webhook", secureIdWebhook);
+
+// Cashfree VKYC APIs
+apiRouter.use("/vkyc", vkycRouter);
 
 // All /user routes are behind globalapikey in Laravel
 const userRouter = Router();
