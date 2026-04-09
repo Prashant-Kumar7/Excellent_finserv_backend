@@ -1449,6 +1449,81 @@ function parseRegNoFromVerificationId(verificationId: string): string | null {
   return parts.slice(1, -1).join("_") || null;
 }
 
+function deepFindStringByKeys(input: unknown, keys: string[]): string {
+  const wanted = new Set(keys.map((k) => k.toLowerCase()));
+  const queue: unknown[] = [input];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    if (!cur || typeof cur !== "object") continue;
+    if (Array.isArray(cur)) {
+      queue.push(...cur);
+      continue;
+    }
+    for (const [k, v] of Object.entries(cur as Record<string, unknown>)) {
+      if (wanted.has(k.toLowerCase()) && (typeof v === "string" || typeof v === "number")) {
+        const out = String(v).trim();
+        if (out.length > 0) return out;
+      }
+      if (v && typeof v === "object") queue.push(v);
+    }
+  }
+  return "";
+}
+
+function normalizeDigits(raw: string): string {
+  return raw.replace(/\D/g, "");
+}
+
+function extractAadhaarProfileUpdate(input: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const fullName = deepFindStringByKeys(input, ["full_name", "name", "user_name"]);
+  if (fullName) out.name = fullName;
+
+  const fatherName = deepFindStringByKeys(input, ["father_name", "fathers_name", "father"]);
+  if (fatherName) out.father_name = fatherName;
+
+  const aadhaarNoRaw = deepFindStringByKeys(input, [
+    "aadhaar_number",
+    "aadhar_number",
+    "masked_aadhaar",
+    "masked_aadhar",
+    "uid",
+    "aadhaar",
+    "aadhar"
+  ]);
+  const aadhaarDigits = normalizeDigits(aadhaarNoRaw);
+  if (aadhaarDigits.length >= 4) out.aadhar_number = aadhaarDigits;
+
+  const house = deepFindStringByKeys(input, ["house", "house_no", "house_number", "building", "care_of", "co"]);
+  const locality = deepFindStringByKeys(input, ["locality", "street", "landmark", "village", "subdistrict", "district"]);
+  const city = deepFindStringByKeys(input, ["city", "district", "post_office", "po"]);
+  const state = deepFindStringByKeys(input, ["state"]);
+  const pincodeRaw = deepFindStringByKeys(input, ["pincode", "pin_code", "postal_code", "zip"]);
+  const pincode = normalizeDigits(pincodeRaw).slice(0, 6);
+
+  if (house) {
+    out.current_house_no = house;
+    out.permanent_house_no = house;
+  }
+  if (locality) {
+    out.current_village = locality;
+    out.permanent_village = locality;
+  }
+  if (city) {
+    out.current_city = city;
+    out.permanent_city = city;
+  }
+  if (state) {
+    out.current_state = state;
+    out.permanent_state = state;
+  }
+  if (pincode.length === 6) {
+    out.current_pincode = pincode;
+    out.permanent_pincode = pincode;
+  }
+  return out;
+}
+
 type SecureIdWebhookPayload = {
   event_type?: string;
   data?: {
@@ -1504,6 +1579,47 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
 
   const body = req.body as Request["body"];
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  const currentUser = await prisma.user.findFirst({
+    where: { regNo: user.regNo },
+    select: {
+      kyc_status: true,
+      name: true,
+      father_name: true,
+      aadhar_number: true,
+      current_house_no: true,
+      current_village: true,
+      current_city: true,
+      current_state: true,
+      current_pincode: true,
+      permanent_house_no: true,
+      permanent_village: true,
+      permanent_city: true,
+      permanent_state: true,
+      permanent_pincode: true,
+    },
+  });
+  const aadhaarLocked = String(currentUser?.kyc_status ?? "").trim() === "1";
+  const lockedTextFields = new Set<string>();
+  if (aadhaarLocked) {
+    const lockCandidates: Array<[string, string | null | undefined]> = [
+      ["name", currentUser?.name],
+      ["father_name", currentUser?.father_name],
+      ["aadhar_number", currentUser?.aadhar_number],
+      ["current_house_no", currentUser?.current_house_no],
+      ["current_village", currentUser?.current_village],
+      ["current_city", currentUser?.current_city],
+      ["current_state", currentUser?.current_state],
+      ["current_pincode", currentUser?.current_pincode],
+      ["permanent_house_no", currentUser?.permanent_house_no],
+      ["permanent_village", currentUser?.permanent_village],
+      ["permanent_city", currentUser?.permanent_city],
+      ["permanent_state", currentUser?.permanent_state],
+      ["permanent_pincode", currentUser?.permanent_pincode],
+    ];
+    for (const [k, v] of lockCandidates) {
+      if (String(v ?? "").trim().length > 0) lockedTextFields.add(k);
+    }
+  }
 
   const data: {
     name?: string;
@@ -1533,16 +1649,16 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
   } = { updated_at: new Date() };
 
   const name = multipartString(body, "name");
-  if (name !== undefined) data.name = name;
+  if (name !== undefined && !lockedTextFields.has("name")) data.name = name;
 
   const fatherName = multipartString(body, "father_name");
-  if (fatherName !== undefined) data.father_name = fatherName;
+  if (fatherName !== undefined && !lockedTextFields.has("father_name")) data.father_name = fatherName;
 
   const email = multipartString(body, "email");
   if (email !== undefined) data.email = email;
 
   const aadhar = multipartString(body, "aadhar_number");
-  if (aadhar !== undefined) data.aadhar_number = aadhar;
+  if (aadhar !== undefined && !lockedTextFields.has("aadhar_number")) data.aadhar_number = aadhar;
 
   const pan = multipartString(body, "pan_number");
   if (pan !== undefined) data.pan_number = pan;
@@ -1560,26 +1676,26 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
   if (upi !== undefined) data.upi_id = upi;
 
   const currentHouseNo = multipartString(body, "current_house_no");
-  if (currentHouseNo !== undefined) data.current_house_no = currentHouseNo;
+  if (currentHouseNo !== undefined && !lockedTextFields.has("current_house_no")) data.current_house_no = currentHouseNo;
   const currentVillage = multipartString(body, "current_village");
-  if (currentVillage !== undefined) data.current_village = currentVillage;
+  if (currentVillage !== undefined && !lockedTextFields.has("current_village")) data.current_village = currentVillage;
   const currentCity = multipartString(body, "current_city");
-  if (currentCity !== undefined) data.current_city = currentCity;
+  if (currentCity !== undefined && !lockedTextFields.has("current_city")) data.current_city = currentCity;
   const currentState = multipartString(body, "current_state");
-  if (currentState !== undefined) data.current_state = currentState;
+  if (currentState !== undefined && !lockedTextFields.has("current_state")) data.current_state = currentState;
   const currentPincode = multipartString(body, "current_pincode");
-  if (currentPincode !== undefined) data.current_pincode = currentPincode;
+  if (currentPincode !== undefined && !lockedTextFields.has("current_pincode")) data.current_pincode = currentPincode;
 
   const permanentHouseNo = multipartString(body, "permanent_house_no");
-  if (permanentHouseNo !== undefined) data.permanent_house_no = permanentHouseNo;
+  if (permanentHouseNo !== undefined && !lockedTextFields.has("permanent_house_no")) data.permanent_house_no = permanentHouseNo;
   const permanentVillage = multipartString(body, "permanent_village");
-  if (permanentVillage !== undefined) data.permanent_village = permanentVillage;
+  if (permanentVillage !== undefined && !lockedTextFields.has("permanent_village")) data.permanent_village = permanentVillage;
   const permanentCity = multipartString(body, "permanent_city");
-  if (permanentCity !== undefined) data.permanent_city = permanentCity;
+  if (permanentCity !== undefined && !lockedTextFields.has("permanent_city")) data.permanent_city = permanentCity;
   const permanentState = multipartString(body, "permanent_state");
-  if (permanentState !== undefined) data.permanent_state = permanentState;
+  if (permanentState !== undefined && !lockedTextFields.has("permanent_state")) data.permanent_state = permanentState;
   const permanentPincode = multipartString(body, "permanent_pincode");
-  if (permanentPincode !== undefined) data.permanent_pincode = permanentPincode;
+  if (permanentPincode !== undefined && !lockedTextFields.has("permanent_pincode")) data.permanent_pincode = permanentPincode;
 
   const userImage = files.find((f) => f.fieldname === "user_image");
   if (userImage?.buffer?.length) {
@@ -1811,8 +1927,23 @@ export async function secureIdWebhook(req: Request, res: Response) {
     const status = String(payload.data?.status ?? "");
     const isAadhaarFlow = verificationId.toUpperCase().startsWith("DGLA_");
     if (status === "AUTHENTICATED") {
+      let aadhaarDerivedUpdate: Record<string, unknown> = {};
+      if (isAadhaarFlow) {
+        try {
+          const aadhaarDoc = await getDigilockerDocument({
+            documentType: "AADHAAR",
+            verificationId,
+          });
+          aadhaarDerivedUpdate = extractAadhaarProfileUpdate(aadhaarDoc);
+        } catch {
+          aadhaarDerivedUpdate = {};
+        }
+      }
       await prisma.$transaction(async (tx) => {
-        await tx.user.updateMany({ where: { regNo }, data: { kyc_status: 1, updated_at: new Date() } });
+        await tx.user.updateMany({
+          where: { regNo },
+          data: { kyc_status: 1, updated_at: new Date(), ...aadhaarDerivedUpdate },
+        });
 
         if (!isAadhaarFlow) return;
 
