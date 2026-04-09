@@ -1434,8 +1434,9 @@ function regNoToken(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-function kycDigilockerVerificationId(regNo: string): string {
-  return `DGL_${regNoToken(regNo)}_${Date.now()}`.slice(0, 50);
+function kycDigilockerVerificationId(regNo: string, documentType: "AADHAAR" | "PAN"): string {
+  const prefix = documentType === "AADHAAR" ? "DGLA" : "DGLP";
+  return `${prefix}_${regNoToken(regNo)}_${Date.now()}`.slice(0, 50);
 }
 
 function bankRpdVerificationId(regNo: string): string {
@@ -1664,20 +1665,27 @@ export async function createKycDigilockerUrl(req: AuthenticatedRequest, res: Res
   const user = req.user;
   if (!user) return res.status(401).json({ status: false, message: "Invalid token" });
   try {
-    const bankRows = await prisma.bank.findMany({ where: { regNo: user.regNo } });
-    const available = bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
-    if (available < AADHAAR_KYC_FEE) {
-      return res.status(400).json({
-        status: false,
-        message: `Minimum ${AADHAAR_KYC_FEE} required in E-wallet for Aadhaar verification.`,
-      });
+    const rawDoc = String((req.body as Record<string, unknown>)?.document_type ?? "AADHAAR")
+      .trim()
+      .toUpperCase();
+    const documentType = rawDoc === "PAN" ? "PAN" : "AADHAAR";
+
+    if (documentType === "AADHAAR") {
+      const bankRows = await prisma.bank.findMany({ where: { regNo: user.regNo } });
+      const available = bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+      if (available < AADHAAR_KYC_FEE) {
+        return res.status(400).json({
+          status: false,
+          message: `Minimum ${AADHAAR_KYC_FEE} required in E-wallet for Aadhaar verification.`,
+        });
+      }
     }
 
-    const verificationId = kycDigilockerVerificationId(user.regNo);
+    const verificationId = kycDigilockerVerificationId(user.regNo, documentType);
     const redirectUrl = process.env.CASHFREE_SECUREID_DIGILOCKER_REDIRECT_URL;
     const out = await createDigilockerUrl({
       verificationId,
-      documents: ["AADHAAR", "PAN"],
+      documents: [documentType],
       userFlow: "signup",
       ...(redirectUrl ? { redirectUrl } : {})
     });
@@ -1801,9 +1809,12 @@ export async function secureIdWebhook(req: Request, res: Response) {
 
   if (eventType.startsWith("DIGILOCKER_VERIFICATION_")) {
     const status = String(payload.data?.status ?? "");
+    const isAadhaarFlow = verificationId.toUpperCase().startsWith("DGLA_");
     if (status === "AUTHENTICATED") {
       await prisma.$transaction(async (tx) => {
         await tx.user.updateMany({ where: { regNo }, data: { kyc_status: 1, updated_at: new Date() } });
+
+        if (!isAadhaarFlow) return;
 
         const alreadyCharged = await tx.bank.findFirst({
           where: { regNo, comment: AADHAAR_KYC_FEE_COMMENT },
