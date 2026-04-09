@@ -606,6 +606,22 @@ function roundMoney(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
+function normalizeStatus(raw: unknown): string | null {
+  const s = String(raw ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (["approved", "paid", "success", "successful", "done", "completed", "complete", "active", "withdrawn", "early_withdrawn"].includes(s)) {
+    return "approved";
+  }
+  if (["pending", "cancelled", "canceled", "failed", "failure", "rejected", "expired", "dropped", "user_dropped", "incomplete"].includes(s)) {
+    return "rejected";
+  }
+  return s;
+}
+
+function isCompletedStatus(raw: unknown): boolean {
+  return normalizeStatus(raw) === "approved";
+}
+
 /** Adds debit_amount, credit_amount, balance_after (running total, oldest→newest). */
 function enrichLedgerRowsWithDebitCreditBalance(rows: Record<string, unknown>[]) {
   if (rows.length === 0) return;
@@ -655,6 +671,7 @@ export async function buildFullTransactionLedger(regNo: string) {
   const rows: Record<string, unknown>[] = [];
 
   for (const w of wallets) {
+    if (w.status != null && !isCompletedStatus(w.status)) continue;
     rows.push({
       ledger_id: `w_${w.id}`,
       ledger_source: "income_wallet",
@@ -664,7 +681,7 @@ export async function buildFullTransactionLedger(regNo: string) {
       comment: w.comment ?? "",
       created_at: ledgerTs(w.created_at ?? w.updated_at),
       updated_at: ledgerTs(w.updated_at ?? w.created_at),
-      status: w.status ?? null,
+      status: normalizeStatus(w.status),
       txn_type: w.txn_type ?? null,
       level: w.level ?? null,
       gst: ledgerNum(w.gst),
@@ -681,6 +698,7 @@ export async function buildFullTransactionLedger(regNo: string) {
   }
 
   for (const b of banks) {
+    if (b.status != null && !isCompletedStatus(b.status)) continue;
     rows.push({
       ledger_id: `b_${b.id}`,
       ledger_source: "bank_wallet",
@@ -690,7 +708,7 @@ export async function buildFullTransactionLedger(regNo: string) {
       comment: b.comment ?? "",
       created_at: ledgerTs(b.created_at ?? b.updated_at),
       updated_at: ledgerTs(b.updated_at ?? b.created_at),
-      status: b.status ?? null,
+      status: normalizeStatus(b.status),
       txn_type: b.txn_type ?? null,
       level: null,
       gst: null,
@@ -708,7 +726,8 @@ export async function buildFullTransactionLedger(regNo: string) {
 
   for (const d of deposits) {
     const st = String(d.status ?? "").toLowerCase();
-    const showAmount = st === "rejected" ? 0 : ledgerNum(d.total_amount);
+    if (!isCompletedStatus(st)) continue;
+    const showAmount = ledgerNum(d.total_amount);
     rows.push({
       ledger_id: `d_${d.id}`,
       ledger_source: "deposit",
@@ -718,8 +737,8 @@ export async function buildFullTransactionLedger(regNo: string) {
       comment: `Wallet deposit (${d.status ?? "unknown"})`,
       created_at: ledgerTs(d.created_at),
       updated_at: ledgerTs(d.updated_at),
-      status: d.status ?? null,
-      txn_type: st === "approved" ? "credit" : st === "pending" ? "pending" : st === "rejected" ? "failed" : null,
+      status: normalizeStatus(d.status),
+      txn_type: "credit",
       level: null,
       gst: ledgerNum(d.gst),
       tds: null,
@@ -767,18 +786,19 @@ export async function buildFullTransactionLedger(regNo: string) {
   };
 
   for (const o of cfOrders) {
-    const paid = String(o.status ?? "").toLowerCase() === "paid";
+    const paid = isCompletedStatus(o.status);
+    if (!paid) continue;
     rows.push({
       ledger_id: `cf_${o.id}`,
       ledger_source: "online_payment",
       id: o.id,
       regNo: o.reg_no,
-      amount: paid ? -ledgerNum(o.order_amount) : 0,
+      amount: -ledgerNum(o.order_amount),
       comment: purposeLabel[o.purpose] ?? `Online payment (${o.purpose})`,
       created_at: ledgerTs(o.created_at),
       updated_at: ledgerTs(o.updated_at),
-      status: o.status ?? null,
-      txn_type: paid ? "debit" : "pending",
+      status: normalizeStatus(o.status),
+      txn_type: "debit",
       level: null,
       gst: null,
       tds: null,
@@ -793,31 +813,9 @@ export async function buildFullTransactionLedger(regNo: string) {
     });
   }
 
-  for (const r of rechargePending) {
-    rows.push({
-      ledger_id: `mr_${r.id}`,
-      ledger_source: "mobile_recharge_pending",
-      id: r.id,
-      regNo: r.regNo,
-      amount: -ledgerNum(r.amount),
-      comment: `Mobile recharge request (${r.operator ?? "—"} · ${r.mobile})`,
-      created_at: ledgerTs(r.created_at),
-      updated_at: ledgerTs(r.created_at),
-      status: "pending",
-      txn_type: "pending",
-      level: null,
-      gst: null,
-      tds: null,
-      amount_to_pay: null,
-      service_charge: null,
-      source_id: null,
-      payment_method: null,
-      txn: `MR${r.id}`,
-      total_amount: ledgerNum(r.amount),
-      admin_charge: null,
-      deposit_principal: null
-    });
-  }
+  // Pending mobile recharge requests are intentionally hidden from history
+  // until they are processed into completed wallet/bank ledger entries.
+  void rechargePending;
 
   for (const h of holdEarnRows) {
     const status = String(h.status ?? "");
@@ -830,7 +828,7 @@ export async function buildFullTransactionLedger(regNo: string) {
       comment: `Hold & Earn (${status || "pending"})`,
       created_at: ledgerTs(h.createdAt),
       updated_at: ledgerTs(h.withdrawnAt ?? h.lockedAt ?? h.createdAt),
-      status,
+      status: normalizeStatus(status),
       txn_type: status === "active" ? "debit" : status.includes("withdraw") ? "credit" : "pending",
       level: null,
       gst: ledgerNum(h.gstAmount),
@@ -893,7 +891,8 @@ export async function walletHistory(req: AuthenticatedRequest, res: Response) {
     const raw = await prisma.wallet.findMany({
       where: { regNo: user.regNo, ...(comment ? { comment } : {}) }
     });
-    const rows: Record<string, unknown>[] = raw.map((w) => ({
+    const filtered = raw.filter((w) => w.status == null || isCompletedStatus(w.status));
+    const rows: Record<string, unknown>[] = filtered.map((w) => ({
       ledger_id: `w_${w.id}`,
       ledger_source: "income_wallet",
       id: w.id,
@@ -902,7 +901,7 @@ export async function walletHistory(req: AuthenticatedRequest, res: Response) {
       comment: w.comment ?? "",
       created_at: ledgerTs(w.created_at ?? w.updated_at),
       updated_at: ledgerTs(w.updated_at ?? w.created_at),
-      status: w.status ?? null,
+      status: normalizeStatus(w.status),
       txn_type: w.txn_type ?? null,
       level: w.level ?? null,
       gst: ledgerNum(w.gst),
@@ -2292,7 +2291,7 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
       data: { status: "paid", cf_payment_id: cfPaymentId ?? undefined }
     });
   } else if (isPaymentFailed || (orderStatus && orderStatus !== "ACTIVE")) {
-    await prisma.cashfreeOrder.update({ where: { id: cfRow.id }, data: { status: "failed" } });
+    await prisma.cashfreeOrder.update({ where: { id: cfRow.id }, data: { status: "rejected" } });
   }
 
   return res.json({ ok: true });

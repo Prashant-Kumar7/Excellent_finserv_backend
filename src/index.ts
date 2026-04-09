@@ -7,6 +7,7 @@ import multer from "multer";
 
 import { apiRouter } from "./routes/api.js";
 import { webRouter } from "./routes/web.js";
+import { startDailyIncomeSweepScheduler } from "./services/dailyIncomeSweep.js";
 
 dotenv.config();
 
@@ -35,4 +36,6 @@ app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`Node backend listening on port ${PORT}`);
 });
+
+startDailyIncomeSweepScheduler();
 
