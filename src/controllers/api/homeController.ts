@@ -622,6 +622,9 @@ function isCompletedStatus(raw: unknown): boolean {
   return normalizeStatus(raw) === "approved";
 }
 
+const AADHAAR_KYC_FEE = 10;
+const AADHAAR_KYC_FEE_COMMENT = "aadhaar_kyc_verification_fee";
+
 /** Adds debit_amount, credit_amount, balance_after (running total, oldest→newest). */
 function enrichLedgerRowsWithDebitCreditBalance(rows: Record<string, unknown>[]) {
   if (rows.length === 0) return;
@@ -1661,6 +1664,15 @@ export async function createKycDigilockerUrl(req: AuthenticatedRequest, res: Res
   const user = req.user;
   if (!user) return res.status(401).json({ status: false, message: "Invalid token" });
   try {
+    const bankRows = await prisma.bank.findMany({ where: { regNo: user.regNo } });
+    const available = bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+    if (available < AADHAAR_KYC_FEE) {
+      return res.status(400).json({
+        status: false,
+        message: `Minimum ${AADHAAR_KYC_FEE} required in E-wallet for Aadhaar verification.`,
+      });
+    }
+
     const verificationId = kycDigilockerVerificationId(user.regNo);
     const redirectUrl = process.env.CASHFREE_SECUREID_DIGILOCKER_REDIRECT_URL;
     const out = await createDigilockerUrl({
@@ -1790,7 +1802,29 @@ export async function secureIdWebhook(req: Request, res: Response) {
   if (eventType.startsWith("DIGILOCKER_VERIFICATION_")) {
     const status = String(payload.data?.status ?? "");
     if (status === "AUTHENTICATED") {
-      await prisma.user.updateMany({ where: { regNo }, data: { kyc_status: 1, updated_at: new Date() } });
+      await prisma.$transaction(async (tx) => {
+        await tx.user.updateMany({ where: { regNo }, data: { kyc_status: 1, updated_at: new Date() } });
+
+        const alreadyCharged = await tx.bank.findFirst({
+          where: { regNo, comment: AADHAAR_KYC_FEE_COMMENT },
+          select: { id: true },
+        });
+        if (alreadyCharged) return;
+
+        const bankRows = await tx.bank.findMany({ where: { regNo } });
+        const available = bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+        if (available < AADHAAR_KYC_FEE) return;
+
+        await tx.bank.create({
+          data: {
+            regNo,
+            amount: -AADHAAR_KYC_FEE,
+            comment: AADHAAR_KYC_FEE_COMMENT,
+            txn_type: "debit",
+            status: "approved",
+          },
+        });
+      });
     } else if (["FAILURE", "CONSENT_DENIED", "EXPIRED"].includes(status)) {
       await prisma.user.updateMany({ where: { regNo }, data: { kyc_status: 2, updated_at: new Date() } });
     }
