@@ -699,7 +699,7 @@ function isCompletedStatus(raw: unknown): boolean {
   return normalizeStatus(raw) === "approved";
 }
 
-const AADHAAR_KYC_FEE = 10;
+const AADHAAR_KYC_FEE = 25;
 const AADHAAR_KYC_FEE_COMMENT = "aadhaar_kyc_verification_fee";
 
 /** Adds debit_amount, credit_amount, balance_after (running total, oldest→newest). */
