@@ -21,6 +21,7 @@ type OtpRow = {
 
 const MOBILE_REGEX = /^[6-9][0-9]{9}$/;
 const MOBILE_FLEX_REGEX = /^[0-9]{10,15}$/;
+const REGNO_REGEX = /^EX[0-9]{6}([0-9]{2})?$/;
 
 /** Multer / multipart often yields string or single-element array per field. */
 function readFormField(body: Record<string, unknown> | undefined, key: string): string {
@@ -147,12 +148,14 @@ export async function login(req: Request, res: Response) {
 }
 
 export async function checkSponsor(req: Request, res: Response) {
-  const { mobile, sponser_mobile: sponsorMobile } = req.body as {
+  const { mobile, sponser_mobile: sponsorMobileLegacy, sponser_id: sponsorIdRaw } = req.body as {
     mobile?: string;
     sponser_mobile?: string;
+    sponser_id?: string;
   };
+  const sponsorId = String(sponsorIdRaw ?? sponsorMobileLegacy ?? "").trim().toUpperCase();
 
-  if (!mobile || !MOBILE_REGEX.test(mobile) || !sponsorMobile || !/^[0-9]{10}$/.test(sponsorMobile)) {
+  if (!mobile || !MOBILE_REGEX.test(mobile) || !sponsorId || !REGNO_REGEX.test(sponsorId)) {
     return res.status(422).json({ status: false, message: "Validation failed" });
   }
 
@@ -162,7 +165,7 @@ export async function checkSponsor(req: Request, res: Response) {
   }
 
   const sponsor = await prisma.user.findFirst({
-    where: { mobile: sponsorMobile },
+    where: { regNo: sponsorId },
     select: { regNo: true }
   });
   if (!sponsor) {
@@ -257,7 +260,9 @@ export async function registerWithOtp(req: Request, res: Response) {
   const otp = readFormField(body, "otp");
   const name = readFormField(body, "name");
   const lastName = readFormField(body, "last_name");
-  const sponsorMobile = readFormField(body, "sponser_mobile");
+  const sponsorId = (readFormField(body, "sponser_id") || readFormField(body, "sponser_mobile"))
+    .trim()
+    .toUpperCase();
   const referralCodeRaw =
     readFormField(body, "referral_code") || readFormField(body, "referralCode") || readFormField(body, "ref_code");
   const password = readFormField(body, "password");
@@ -269,8 +274,8 @@ export async function registerWithOtp(req: Request, res: Response) {
     !/^[0-9]{4}$/.test(String(otp)) ||
     !name ||
     !lastName ||
-    !sponsorMobile ||
-    !/^[0-9]{10}$/.test(sponsorMobile) ||
+    !sponsorId ||
+    !REGNO_REGEX.test(sponsorId) ||
     !password ||
     password.length < 6
   ) {
@@ -298,7 +303,7 @@ export async function registerWithOtp(req: Request, res: Response) {
     }
 
     const sponsor = await prisma.user.findFirst({
-      where: { mobile: sponsorMobile },
+      where: { regNo: sponsorId },
       select: { regNo: true }
     });
     if (!sponsor) {
