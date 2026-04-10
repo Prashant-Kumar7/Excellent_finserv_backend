@@ -10,6 +10,8 @@ datasource db {
 model User {
   id         Int      @id @default(autoincrement())
   regNo      String?  @unique
+  /// Public referral code for sharing (defaults to regNo for new users).
+  referral_code String? @unique
   name       String?
   last_name  String?
   father_name String?
@@ -52,7 +54,27 @@ model User {
   created_at DateTime?
   updated_at DateTime?
 
+  referredBy Referral[] @relation("ReferralReferredUser")
+  referralsMade Referral[] @relation("ReferralReferrerUser")
+
   @@map("users")
+}
+
+model Referral {
+  id             Int      @id @default(autoincrement())
+  referrerUserId Int
+  referredUserId Int      @unique
+  status         String   @default("pending") // pending | completed | rejected
+  rewardGiven    Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  completedAt    DateTime?
+
+  referrerUser User @relation("ReferralReferrerUser", fields: [referrerUserId], references: [id])
+  referredUser User @relation("ReferralReferredUser", fields: [referredUserId], references: [id])
+
+  @@index([referrerUserId])
+  @@index([status])
+  @@map("referrals")
 }
 
 model Admin {

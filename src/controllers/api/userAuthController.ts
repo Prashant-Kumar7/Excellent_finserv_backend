@@ -258,6 +258,8 @@ export async function registerWithOtp(req: Request, res: Response) {
   const name = readFormField(body, "name");
   const lastName = readFormField(body, "last_name");
   const sponsorMobile = readFormField(body, "sponser_mobile");
+  const referralCodeRaw =
+    readFormField(body, "referral_code") || readFormField(body, "referralCode") || readFormField(body, "ref_code");
   const password = readFormField(body, "password");
 
   if (
@@ -314,6 +316,21 @@ export async function registerWithOtp(req: Request, res: Response) {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const userId = await prisma.$transaction(async (tx) => {
+      const referralCode = referralCodeRaw.trim().toUpperCase();
+      let referrerUserId: number | null = null;
+      if (referralCode.length > 0) {
+        const referrer = await tx.user.findFirst({
+          where: {
+            OR: [{ referral_code: referralCode }, { regNo: referralCode }],
+            NOT: { mobile }
+          },
+          select: { id: true }
+        });
+        if (referrer) {
+          referrerUserId = referrer.id;
+        }
+      }
+
       const created = await tx.user.create({
         data: {
           mobile,
@@ -321,10 +338,24 @@ export async function registerWithOtp(req: Request, res: Response) {
           last_name: lastName,
           password: hashedPassword,
           sponser_id: sponsor.regNo ?? null,
-          regNo
+          regNo,
+          referral_code: regNo
         },
         select: { id: true }
       });
+
+      if (referrerUserId != null && referrerUserId !== created.id) {
+        // Creates a "pending referral" for reward-on-Aadhaar-KYC.
+        // Unique constraint on referredUserId prevents duplicates.
+        await tx.referral.create({
+          data: {
+            referrerUserId,
+            referredUserId: created.id,
+            status: "pending",
+            rewardGiven: false
+          }
+        });
+      }
 
       await tx.coin.create({
         data: {

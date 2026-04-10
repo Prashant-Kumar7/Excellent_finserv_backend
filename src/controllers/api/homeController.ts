@@ -9,6 +9,7 @@ function clientIp(req: Request): string {
 import bcrypt from "bcryptjs";
 import type { AuthenticatedRequest } from "../../shared/middleware/userAuth.js";
 import { prisma } from "../../shared/db.js";
+import type { Prisma } from "@prisma/client";
 import { cashfreeCreatePgOrder, normalizeIndianMobile10 } from "../../shared/cashfreePg.js";
 import {
   createDigilockerUrl,
@@ -20,6 +21,76 @@ import {
 } from "../../shared/cashfreeSecureId.js";
 import { signSupabaseAvatarUrl, uploadUserProfileImage } from "../../shared/profileImageUpload.js";
 import { getEffectiveCurrentPackageAmount, validatePackageUpgrade } from "../../shared/subscriptionPlan.js";
+
+function normalizeAadhaar12(raw: string | null | undefined): string {
+  const digits = String(raw ?? "").replace(/\D/g, "");
+  return digits.length === 12 ? digits : "";
+}
+
+function referralRewardCoins(): number {
+  const n = Number(process.env.REFERRAL_REWARD_COINS ?? "50");
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.floor(n);
+}
+
+async function tryCompleteReferralRewardOnAadhaarKyc(tx: Prisma.TransactionClient, referredUserId: number) {
+  const reward = referralRewardCoins();
+  if (reward <= 0) return;
+
+  const referred = await tx.user.findUnique({
+    where: { id: referredUserId },
+    select: { id: true, regNo: true, aadhar_number: true, aadhaar_kyc_status: true }
+  });
+  if (!referred?.id || !referred.regNo) return;
+
+  // Only reward after Aadhaar DigiLocker is verified.
+  if (Number(referred.aadhaar_kyc_status ?? 0) !== 1) return;
+
+  // Anti-fraud: Aadhaar must be a full 12-digit number and unique among verified users.
+  const aadhaar12 = normalizeAadhaar12(referred.aadhar_number);
+  if (!aadhaar12) return;
+  const dup = await tx.user.findFirst({
+    where: {
+      id: { not: referred.id },
+      aadhaar_kyc_status: 1,
+      aadhar_number: aadhaar12
+    },
+    select: { id: true }
+  });
+  if (dup) return;
+
+  const pending = await tx.referral.findFirst({
+    where: { referredUserId: referred.id, status: "pending", rewardGiven: false },
+    select: { id: true, referrerUserId: true }
+  });
+  if (!pending) return;
+
+  const referrer = await tx.user.findUnique({
+    where: { id: pending.referrerUserId },
+    select: { id: true, regNo: true }
+  });
+  if (!referrer?.regNo) return;
+
+  // Idempotency: update referral first; if it was already updated, skip coin credit.
+  const updated = await tx.referral.updateMany({
+    where: { id: pending.id, rewardGiven: false },
+    data: {
+      status: "completed",
+      rewardGiven: true,
+      completedAt: new Date()
+    }
+  });
+  if (updated.count !== 1) return;
+
+  // Credit referrer in coin wallet (dashboard sums comment === "Referral_Income").
+  await tx.coin.create({
+    data: {
+      regNo: referrer.regNo,
+      amount: reward,
+      comment: "Referral_Income"
+    }
+  });
+}
 
 function packageNameByAmount(amount: number) {
   if (amount === 2500) return "Bronze";
@@ -2002,6 +2073,12 @@ export async function secureIdWebhook(req: Request, res: Response) {
             status: "approved",
           },
         });
+
+        // Referral reward (reward referrer only after referred user's Aadhaar KYC is verified).
+        const referredUser = await tx.user.findFirst({ where: { regNo }, select: { id: true } });
+        if (referredUser?.id) {
+          await tryCompleteReferralRewardOnAadhaarKyc(tx, referredUser.id);
+        }
       });
     } else if (["FAILURE", "CONSENT_DENIED", "EXPIRED"].includes(status)) {
       const failField = verificationId.toUpperCase().startsWith("DGLA_")
