@@ -27,8 +27,9 @@ function normalizeAadhaar12(raw: string | null | undefined): string {
   return digits.length === 12 ? digits : "";
 }
 
+/** Referrer coin reward after referred user completes Aadhaar KYC (`REFERRAL_REWARD_COINS`, default 100). */
 function referralRewardCoins(): number {
-  const n = Number(process.env.REFERRAL_REWARD_COINS ?? "50");
+  const n = Number(process.env.REFERRAL_REWARD_COINS ?? "100");
   if (!Number.isFinite(n) || n <= 0) return 0;
   return Math.floor(n);
 }
