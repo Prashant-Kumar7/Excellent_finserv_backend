@@ -15,6 +15,7 @@ model User {
   name       String?
   last_name  String?
   father_name String?
+  dob        DateTime?
   email      String?  @unique
   mobile     String?  @unique
   password   String?

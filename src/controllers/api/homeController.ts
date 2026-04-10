@@ -108,6 +108,7 @@ async function getUserForClientById(userId: number) {
       name: true,
       last_name: true,
       father_name: true,
+      dob: true,
       mobile: true,
       email: true,
       created_at: true,
@@ -1568,6 +1569,22 @@ function normalizeDigits(raw: string): string {
   return raw.replace(/\D/g, "");
 }
 
+function parseFlexibleDob(raw: string): Date | null {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  const native = new Date(text);
+  if (!Number.isNaN(native.getTime())) return native;
+  const m = text.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (!m) return null;
+  const d = Number(m[1]);
+  const mon = Number(m[2]);
+  const y = Number(m[3]);
+  if (mon < 1 || mon > 12 || d < 1 || d > 31) return null;
+  const parsed = new Date(Date.UTC(y, mon - 1, d));
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
 function extractAadhaarProfileUpdate(input: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const fullName = deepFindStringByKeys(input, ["full_name", "name", "user_name"]);
@@ -1575,6 +1592,9 @@ function extractAadhaarProfileUpdate(input: Record<string, unknown>): Record<str
 
   const fatherName = deepFindStringByKeys(input, ["father_name", "fathers_name", "father"]);
   if (fatherName) out.father_name = fatherName;
+  const dobRaw = deepFindStringByKeys(input, ["dob", "date_of_birth", "birth_date", "birthdate"]);
+  const dob = parseFlexibleDob(dobRaw);
+  if (dob) out.dob = dob;
 
   const aadhaarNoRaw = deepFindStringByKeys(input, [
     "aadhaar_number",
@@ -1681,6 +1701,7 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
       pan_kyc_status: true,
       name: true,
       father_name: true,
+      dob: true,
       aadhar_number: true,
       current_house_no: true,
       current_village: true,
@@ -1705,6 +1726,7 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
     const lockCandidates: Array<[string, string | null | undefined]> = [
       ["name", currentUser?.name],
       ["father_name", currentUser?.father_name],
+      ["dob", currentUser?.dob ? currentUser.dob.toISOString() : null],
       ["aadhar_number", currentUser?.aadhar_number],
       ["current_house_no", currentUser?.current_house_no],
       ["current_village", currentUser?.current_village],
@@ -1725,6 +1747,7 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
   const data: {
     name?: string;
     father_name?: string | null;
+    dob?: Date | null;
     email?: string | null;
     aadhar_number?: string | null;
     pan_number?: string | null;
@@ -1754,6 +1777,15 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
 
   const fatherName = multipartString(body, "father_name");
   if (fatherName !== undefined && !lockedTextFields.has("father_name")) data.father_name = fatherName;
+
+  const dobRaw = multipartString(body, "dob");
+  if (dobRaw !== undefined && !lockedTextFields.has("dob")) {
+    const dob = parseFlexibleDob(dobRaw);
+    if (!dob) {
+      return res.status(422).json({ status: false, message: "Invalid DOB format" });
+    }
+    data.dob = dob;
+  }
 
   const email = multipartString(body, "email");
   if (email !== undefined) data.email = email;
