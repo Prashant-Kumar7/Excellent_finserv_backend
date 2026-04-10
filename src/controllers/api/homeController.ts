@@ -47,6 +47,10 @@ async function getUserForClientById(userId: number) {
       ifsc: true,
       upi_id: true,
       kyc_status: true,
+      aadhaar_kyc_status: true,
+      pan_kyc_status: true,
+      vkyc_status: true,
+      vkyc_completed_at: true,
       user_image: true,
       aadhar_number: true,
       pan_number: true,
@@ -1583,6 +1587,8 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
     where: { regNo: user.regNo },
     select: {
       kyc_status: true,
+      aadhaar_kyc_status: true,
+      pan_kyc_status: true,
       name: true,
       father_name: true,
       aadhar_number: true,
@@ -1598,7 +1604,12 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
       permanent_pincode: true,
     },
   });
-  const aadhaarLocked = String(currentUser?.kyc_status ?? "").trim() === "1";
+  const legacyAadhaarFromOldKyc =
+    String(currentUser?.kyc_status ?? "").trim() === "1" &&
+    currentUser?.aadhaar_kyc_status == null &&
+    currentUser?.pan_kyc_status == null &&
+    String(currentUser?.aadhar_number ?? "").replace(/\D/g, "").length >= 12;
+  const aadhaarLocked = Number(currentUser?.aadhaar_kyc_status ?? 0) === 1 || legacyAadhaarFromOldKyc;
   const lockedTextFields = new Set<string>();
   if (aadhaarLocked) {
     const lockCandidates: Array<[string, string | null | undefined]> = [
@@ -1940,9 +1951,15 @@ export async function secureIdWebhook(req: Request, res: Response) {
         }
       }
       await prisma.$transaction(async (tx) => {
+        const digilockerOk: Record<string, unknown> = {
+          updated_at: new Date(),
+          ...(isAadhaarFlow
+            ? { aadhaar_kyc_status: 1, ...aadhaarDerivedUpdate }
+            : { pan_kyc_status: 1 })
+        };
         await tx.user.updateMany({
           where: { regNo },
-          data: { kyc_status: 1, updated_at: new Date(), ...aadhaarDerivedUpdate },
+          data: digilockerOk
         });
 
         if (!isAadhaarFlow) return;
@@ -1968,7 +1985,13 @@ export async function secureIdWebhook(req: Request, res: Response) {
         });
       });
     } else if (["FAILURE", "CONSENT_DENIED", "EXPIRED"].includes(status)) {
-      await prisma.user.updateMany({ where: { regNo }, data: { kyc_status: 2, updated_at: new Date() } });
+      const failField = verificationId.toUpperCase().startsWith("DGLA_")
+        ? { aadhaar_kyc_status: 2 }
+        : { pan_kyc_status: 2 };
+      await prisma.user.updateMany({
+        where: { regNo },
+        data: { ...failField, updated_at: new Date() }
+      });
     }
   } else if (eventType === "VKYC_STATUS_UPDATE") {
     const status = String(payload.data?.status ?? "");
@@ -1992,12 +2015,7 @@ export async function secureIdWebhook(req: Request, res: Response) {
       updateData.vkyc_completed_at = new Date();
     }
 
-    // Keep existing Flutter KYC tick working (it currently reads `kyc_status`).
-    if (["success", "verified", "done"].includes(normalized)) {
-      updateData.kyc_status = 1;
-    } else if (["failed", "failure", "closed", "rejected", "consent_denied", "expired"].includes(normalized)) {
-      updateData.kyc_status = 2;
-    }
+    // Video KYC completion is tracked via vkyc_status / vkyc_completed_at only (not `kyc_status`).
 
     await prisma.user.updateMany({ where: { regNo }, data: updateData });
   }

@@ -40,7 +40,12 @@ model User {
   buyer      Int?
   seller     Int?
   status     Int?
+  /// Legacy aggregate flag; prefer aadhaar_kyc_status / pan_kyc_status / vkyc_status.
   kyc_status Int?
+  /// 1 = DigiLocker Aadhaar verified, 2 = failed (DigiLocker).
+  aadhaar_kyc_status Int?
+  /// 1 = DigiLocker PAN verified, 2 = failed (DigiLocker).
+  pan_kyc_status Int?
   vkyc_verification_id String?
   vkyc_status          String?
   vkyc_completed_at    DateTime?
