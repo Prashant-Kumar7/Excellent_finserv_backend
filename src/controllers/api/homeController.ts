@@ -19,6 +19,7 @@ import {
   verifySecureIdWebhookSignature
 } from "../../shared/cashfreeSecureId.js";
 import { signSupabaseAvatarUrl, uploadUserProfileImage } from "../../shared/profileImageUpload.js";
+import { getEffectiveCurrentPackageAmount, validatePackageUpgrade } from "../../shared/subscriptionPlan.js";
 
 function packageNameByAmount(amount: number) {
   if (amount === 2500) return "Bronze";
@@ -1144,27 +1145,36 @@ function newCashfreeMerchantOrderId(): string {
   return `EXF${Date.now()}${Math.floor(Math.random() * 1_000_000)}`.slice(0, 45);
 }
 
-async function fulfillPackagePurchaseFromCashfree(regNo: string, meta: Record<string, unknown>, orderId: string) {
+async function fulfillPackagePurchaseFromCashfree(regNo: string, meta: Record<string, unknown>, orderId: string): Promise<boolean> {
   const amount = Number(meta.package_amount);
   const gst = Number(meta.gst);
   const myTotal = Number(meta.total_amount);
   const sponsorMobileMeta = meta.sponsor_mobile != null && String(meta.sponsor_mobile).length > 0 ? String(meta.sponsor_mobile) : "";
 
   const u = await prisma.user.findFirst({ where: { regNo }, select: { regNo: true, sponser_id: true } });
-  if (!u?.regNo) return;
+  if (!u?.regNo) return false;
 
   if (String(u.sponser_id ?? "0") === "0") {
-    if (!sponsorMobileMeta) return;
+    if (!sponsorMobileMeta) return false;
     const sponsor = await prisma.user.findFirst({
       where: { mobile: sponsorMobileMeta, NOT: { regNo } },
       select: { regNo: true }
     });
-    if (!sponsor) return;
+    if (!sponsor) return false;
     await prisma.user.updateMany({ where: { regNo }, data: { sponser_id: sponsor.regNo } });
   }
 
+  const latestPerday = await prisma.perday.findFirst({ where: { regNo }, orderBy: { id: "desc" } });
+  const currentAmt = getEffectiveCurrentPackageAmount(latestPerday);
+  const tierMsg = validatePackageUpgrade(currentAmt, amount);
+  if (tierMsg) {
+    // eslint-disable-next-line no-console
+    console.error("fulfillPackagePurchaseFromCashfree blocked", { regNo, amount, currentAmt, tierMsg });
+    return false;
+  }
+
   const exists = await prisma.package.findFirst({ where: { regNo, amount } });
-  if (exists) return;
+  if (exists) return true;
 
   const pkgInsert = await prisma.package.create({
     data: {
@@ -1179,6 +1189,7 @@ async function fulfillPackagePurchaseFromCashfree(regNo: string, meta: Record<st
   });
   await prisma.perday.create({ data: { regNo, amount } });
   await levelMlm(regNo, amount, pkgInsert.id);
+  return true;
 }
 
 async function fulfillCibilFromCashfree(regNo: string, meta: Record<string, unknown>) {
@@ -1260,6 +1271,14 @@ export async function purchasePackage(req: AuthenticatedRequest, res: Response) 
 
   const exists = await prisma.package.findFirst({ where: { regNo: user.regNo, amount } });
   if (exists) return res.status(500).json({ status: false, message: "This package is already purchased." });
+
+  const latestPerdayForTier = await prisma.perday.findFirst({
+    where: { regNo: user.regNo },
+    orderBy: { id: "desc" }
+  });
+  const currentPackageAmt = getEffectiveCurrentPackageAmount(latestPerdayForTier);
+  const tierMsg = validatePackageUpgrade(currentPackageAmt, amount);
+  if (tierMsg) return res.status(400).json({ status: false, message: tierMsg });
 
   if (String(user.sponser_id ?? "0") === "0") {
     const sponsorMobile = String(body.sponser_id ?? "");
@@ -2257,6 +2276,14 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
       const exists = await prisma.package.findFirst({ where: { regNo: user.regNo, amount } });
       if (exists) return res.status(500).json({ status: false, message: "This package is already purchased." });
 
+      const latestPerdayCf = await prisma.perday.findFirst({
+        where: { regNo: user.regNo },
+        orderBy: { id: "desc" }
+      });
+      const currentPackageAmtCf = getEffectiveCurrentPackageAmount(latestPerdayCf);
+      const tierMsgCf = validatePackageUpgrade(currentPackageAmtCf, amount);
+      if (tierMsgCf) return res.status(400).json({ status: false, message: tierMsgCf });
+
       const setting = ((await prisma.setting.findFirst()) ?? {}) as Record<string, number>;
       const gst = Number((((amount * Number(setting.deposit_gst ?? 0)) / 100) || 0).toFixed(2));
       const myTotal = Number((amount + gst).toFixed(2));
@@ -2470,7 +2497,12 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
     const meta = (cfRow.meta ?? {}) as Record<string, unknown>;
     try {
       if (cfRow.purpose === "package_purchase") {
-        await fulfillPackagePurchaseFromCashfree(cfRow.reg_no, meta, orderId);
+        const fulfilled = await fulfillPackagePurchaseFromCashfree(cfRow.reg_no, meta, orderId);
+        if (!fulfilled) {
+          // eslint-disable-next-line no-console
+          console.error("cashfreeWebhook package purchase not fulfilled", orderId);
+          return res.json({ ok: true });
+        }
       } else if (cfRow.purpose === "cibil_report") {
         await fulfillCibilFromCashfree(cfRow.reg_no, meta);
       } else if (cfRow.purpose === "loan_service") {
