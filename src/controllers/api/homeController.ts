@@ -1767,16 +1767,12 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
   const aadhaarLocked = Number(currentUser?.aadhaar_kyc_status ?? 0) === 1 || legacyAadhaarFromOldKyc;
   const lockedTextFields = new Set<string>();
   if (aadhaarLocked) {
+    // Current address is always user-editable (e.g. relocation). Permanent + verified personal fields stay locked when filled.
     const lockCandidates: Array<[string, string | null | undefined]> = [
       ["name", currentUser?.name],
       ["father_name", currentUser?.father_name],
       ["dob", currentUser?.dob ? currentUser.dob.toISOString() : null],
       ["aadhar_number", currentUser?.aadhar_number],
-      ["current_house_no", currentUser?.current_house_no],
-      ["current_village", currentUser?.current_village],
-      ["current_city", currentUser?.current_city],
-      ["current_state", currentUser?.current_state],
-      ["current_pincode", currentUser?.current_pincode],
       ["permanent_house_no", currentUser?.permanent_house_no],
       ["permanent_village", currentUser?.permanent_village],
       ["permanent_city", currentUser?.permanent_city],
@@ -1853,15 +1849,15 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
   if (upi !== undefined) data.upi_id = upi;
 
   const currentHouseNo = multipartString(body, "current_house_no");
-  if (currentHouseNo !== undefined && !lockedTextFields.has("current_house_no")) data.current_house_no = currentHouseNo;
+  if (currentHouseNo !== undefined) data.current_house_no = currentHouseNo;
   const currentVillage = multipartString(body, "current_village");
-  if (currentVillage !== undefined && !lockedTextFields.has("current_village")) data.current_village = currentVillage;
+  if (currentVillage !== undefined) data.current_village = currentVillage;
   const currentCity = multipartString(body, "current_city");
-  if (currentCity !== undefined && !lockedTextFields.has("current_city")) data.current_city = currentCity;
+  if (currentCity !== undefined) data.current_city = currentCity;
   const currentState = multipartString(body, "current_state");
-  if (currentState !== undefined && !lockedTextFields.has("current_state")) data.current_state = currentState;
+  if (currentState !== undefined) data.current_state = currentState;
   const currentPincode = multipartString(body, "current_pincode");
-  if (currentPincode !== undefined && !lockedTextFields.has("current_pincode")) data.current_pincode = currentPincode;
+  if (currentPincode !== undefined) data.current_pincode = currentPincode;
 
   const permanentHouseNo = multipartString(body, "permanent_house_no");
   if (permanentHouseNo !== undefined && !lockedTextFields.has("permanent_house_no")) data.permanent_house_no = permanentHouseNo;
