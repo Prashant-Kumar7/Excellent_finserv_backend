@@ -1298,6 +1298,11 @@ async function fulfillLoanFromCashfree(regNo: string, meta: Record<string, unkno
   if (existing) return;
 
   const totalFee = 590;
+  const requestedAmount = Number(meta.loan_amount);
+  const loanAmount =
+    Number.isFinite(requestedAmount) && requestedAmount > 0 && requestedAmount % 500 === 0
+      ? requestedAmount
+      : 0;
   const t = new Date();
   const applicationId = `LN${regNo.replace(/\W/g, "")}${t.getTime()}`.slice(0, 48);
   await prisma.loan.create({
@@ -1306,7 +1311,7 @@ async function fulfillLoanFromCashfree(regNo: string, meta: Record<string, unkno
       name: String(meta.name),
       mobile: String(meta.mobile),
       pan_number: String(meta.pan_number),
-      amount: 0,
+      amount: loanAmount,
       loan_type: String(meta.loan_type),
       status: "pending",
       l_name: (meta.l_name as string | null) ?? null,
@@ -2196,8 +2201,12 @@ export async function loanRequest(req: AuthenticatedRequest, res: Response) {
   if (!user) return res.status(401).json({ status: false, message: "Invalid token" });
   const body = req.body as Record<string, unknown>;
   const totalFee = 590;
+  const loanAmount = Number(body.loan_amount);
   if (!body.name || !body.mobile || !body.pan_number || !body.loan_type) {
     return res.status(422).json({ status: false, errors: { message: "Validation failed" } });
+  }
+  if (!Number.isFinite(loanAmount) || loanAmount <= 0 || loanAmount % 500 !== 0) {
+    return res.status(422).json({ status: false, message: "Loan amount must be in multiples of 500" });
   }
   const pending = await prisma.loan.findFirst({ where: { regNo: user.regNo, status: "pending" }, select: { id: true } });
   if (pending) return res.status(409).json({ status: false, message: "Your previous loan request is still pending" });
@@ -2215,7 +2224,7 @@ export async function loanRequest(req: AuthenticatedRequest, res: Response) {
         name: String(body.name),
         mobile: String(body.mobile),
         pan_number: String(body.pan_number),
-        amount: 0,
+        amount: loanAmount,
         loan_type: String(body.loan_type),
         status: "pending",
         l_name: (body.l_name as string | null) ?? null,
@@ -2535,6 +2544,10 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
       if (!body.name || !body.mobile || !body.pan_number || !body.loan_type) {
         return res.status(422).json({ status: false, errors: { message: "Validation failed" } });
       }
+      const loanAmount = Number(body.loan_amount);
+      if (!Number.isFinite(loanAmount) || loanAmount <= 0 || loanAmount % 500 !== 0) {
+        return res.status(422).json({ status: false, message: "Loan amount must be in multiples of 500" });
+      }
       const pending = await prisma.loan.findFirst({
         where: { regNo: user.regNo, status: "pending" },
         select: { id: true }
@@ -2571,6 +2584,7 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
             mobile: String(body.mobile),
             pan_number: String(body.pan_number),
             loan_type: String(body.loan_type),
+            loan_amount: loanAmount,
             l_name: (body.l_name as string | null) ?? null,
             m_name: (body.m_name as string | null) ?? null
           }
