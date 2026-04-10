@@ -1585,12 +1585,53 @@ function parseFlexibleDob(raw: string): Date | null {
   return parsed;
 }
 
+/** Aadhaar XML/JSON often puts "S/O …" under care_of — that must not become house/address line. */
+function sanitizeAadhaarAddressLine(raw: string): string {
+  let s = String(raw ?? "").trim();
+  if (!s) return "";
+  // Entire value is only a relation line (no street/house info)
+  if (/^(S\/O|D\/O|W\/O|C\/O)\s+\S+/i.test(s) && !/\d/.test(s)) {
+    return "";
+  }
+  // Strip a leading S/O … clause from a longer address
+  s = s.replace(/^(S\/O|D\/O|W\/O|C\/O)\s+[^,\n]+([,\n]\s*|$)/i, "").trim();
+  s = s.replace(/^[,;]\s*/, "").trim();
+  return s;
+}
+
+/** Son/daughter of — name before comma/newline when mixed with address. */
+function parseFatherNameFromSoDoLine(raw: string): string {
+  const s = String(raw ?? "").trim();
+  const m = s.match(/^(?:S\/O|D\/O)\s*[:\-]?\s*(.+)$/i);
+  if (!m?.[1]) return "";
+  let name = m[1].trim();
+  name = name.split(/,/)[0]?.trim() ?? "";
+  name = name.split(/\n/)[0]?.trim() ?? "";
+  if (name.length < 2) return "";
+  if (/^\d{3,}/.test(name)) return "";
+  return name;
+}
+
 function extractAadhaarProfileUpdate(input: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const fullName = deepFindStringByKeys(input, ["full_name", "name", "user_name"]);
   if (fullName) out.name = fullName;
 
-  const fatherName = deepFindStringByKeys(input, ["father_name", "fathers_name", "father"]);
+  let fatherName = deepFindStringByKeys(input, ["father_name", "fathers_name", "father"]);
+  if (!fatherName) {
+    const careOfCandidates = [
+      deepFindStringByKeys(input, ["care_of", "co", "careof", "guardian"]),
+      deepFindStringByKeys(input, ["house", "house_no", "house_number", "building"]),
+      deepFindStringByKeys(input, ["locality", "street", "landmark", "village", "subdistrict", "district"]),
+    ];
+    for (const cand of careOfCandidates) {
+      const parsed = parseFatherNameFromSoDoLine(cand);
+      if (parsed) {
+        fatherName = parsed;
+        break;
+      }
+    }
+  }
   if (fatherName) out.father_name = fatherName;
   const dobRaw = deepFindStringByKeys(input, ["dob", "date_of_birth", "birth_date", "birthdate"]);
   const dob = parseFlexibleDob(dobRaw);
@@ -1608,8 +1649,11 @@ function extractAadhaarProfileUpdate(input: Record<string, unknown>): Record<str
   const aadhaarDigits = normalizeDigits(aadhaarNoRaw);
   if (aadhaarDigits.length >= 4) out.aadhar_number = aadhaarDigits;
 
-  const house = deepFindStringByKeys(input, ["house", "house_no", "house_number", "building", "care_of", "co"]);
-  const locality = deepFindStringByKeys(input, ["locality", "street", "landmark", "village", "subdistrict", "district"]);
+  // Do not use care_of / co for "house" — they hold S/O father name on Aadhaar, not door number.
+  const houseRaw = deepFindStringByKeys(input, ["house", "house_no", "house_number", "building"]);
+  const house = sanitizeAadhaarAddressLine(houseRaw);
+  const localityRaw = deepFindStringByKeys(input, ["locality", "street", "landmark", "village", "subdistrict", "district"]);
+  const locality = sanitizeAadhaarAddressLine(localityRaw);
   const city = deepFindStringByKeys(input, ["city", "district", "post_office", "po"]);
   const state = deepFindStringByKeys(input, ["state"]);
   const pincodeRaw = deepFindStringByKeys(input, ["pincode", "pin_code", "postal_code", "zip"]);
