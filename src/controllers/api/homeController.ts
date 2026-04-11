@@ -107,7 +107,6 @@ async function getUserForClientById(userId: number) {
     select: {
       id: true,
       name: true,
-      last_name: true,
       father_name: true,
       dob: true,
       mobile: true,

@@ -1,4 +1,6 @@
+/// <reference types="node" />
 import "dotenv/config";
+import { execSync } from "node:child_process";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
@@ -12,37 +14,92 @@ const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) })
 
 const now = () => new Date();
 
+/** Empty or partially migrated DBs may omit tables that exist in schema.prisma. */
+async function clearDelete(fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2021") return;
+    throw e;
+  }
+}
+
 async function clearDatabase() {
-  await prisma.tenderParticipate.deleteMany();
-  await prisma.tenderInterest.deleteMany();
-  await prisma.tenderWishlist.deleteMany();
-  await prisma.tender.deleteMany();
-  await prisma.rFQ.deleteMany();
-  await prisma.product.deleteMany();
-  await prisma.subCategory.deleteMany();
-  await prisma.category.deleteMany();
-  await prisma.city.deleteMany();
-  await prisma.state.deleteMany();
-  await prisma.region.deleteMany();
-  await prisma.cibileReportRequest.deleteMany();
-  await prisma.insurance.deleteMany();
-  await prisma.loan.deleteMany();
-  await prisma.perday.deleteMany();
-  await prisma.package.deleteMany();
-  await prisma.bank.deleteMany();
-  await prisma.wallet.deleteMany();
-  await prisma.coin.deleteMany();
-  await prisma.supportTicket.deleteMany();
-  await prisma.deposit.deleteMany();
-  await prisma.otp.deleteMany();
-  await prisma.admin.deleteMany();
-  await prisma.user.deleteMany();
-  await prisma.unit.deleteMany();
-  await prisma.setting.deleteMany();
+  await clearDelete(() => prisma.tenderParticipate.deleteMany());
+  await clearDelete(() => prisma.tenderInterest.deleteMany());
+  await clearDelete(() => prisma.tenderWishlist.deleteMany());
+  await clearDelete(() => prisma.tender.deleteMany());
+  await clearDelete(() => prisma.rFQ.deleteMany());
+  await clearDelete(() => prisma.product.deleteMany());
+  await clearDelete(() => prisma.subCategory.deleteMany());
+  await clearDelete(() => prisma.category.deleteMany());
+  await clearDelete(() => prisma.city.deleteMany());
+  await clearDelete(() => prisma.state.deleteMany());
+  await clearDelete(() => prisma.region.deleteMany());
+  await clearDelete(() => prisma.cibileReportRequest.deleteMany());
+  await clearDelete(() => prisma.insurance.deleteMany());
+  await clearDelete(() => prisma.loan.deleteMany());
+  await clearDelete(() => prisma.perday.deleteMany());
+  await clearDelete(() => prisma.package.deleteMany());
+  await clearDelete(() => prisma.bank.deleteMany());
+  await clearDelete(() => prisma.wallet.deleteMany());
+  await clearDelete(() => prisma.coin.deleteMany());
+  await clearDelete(() => prisma.supportTicket.deleteMany());
+  await clearDelete(() => prisma.deposit.deleteMany());
+  await clearDelete(() => prisma.otp.deleteMany());
+  await clearDelete(() => prisma.holdEarnRequest.deleteMany());
+  await clearDelete(() => prisma.cashfreeOrder.deleteMany());
+  await clearDelete(() => prisma.mobileRechargeRequest.deleteMany());
+  await clearDelete(() => prisma.digitalDeclarationAudit.deleteMany());
+  await clearDelete(() => prisma.referral.deleteMany());
+  await clearDelete(() => prisma.admin.deleteMany());
+  await clearDelete(() => prisma.user.deleteMany());
+  await clearDelete(() => prisma.unit.deleteMany());
+  await clearDelete(() => prisma.setting.deleteMany());
+}
+
+async function hasPublicTable(tableName: string): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ exists: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = ${tableName}
+    ) AS "exists"
+  `;
+  return Boolean(rows[0]?.exists);
+}
+
+/** Empty dev DBs: sync schema once so seed can run without a separate push step. */
+async function ensureSchemaForSeed(): Promise<void> {
+  if (await hasPublicTable("regions")) return;
+
+  const isProd = process.env.NODE_ENV === "production";
+  if (isProd) {
+    throw new Error(
+      'Schema not applied: table "regions" is missing. In production run `npx prisma migrate deploy`, then `npx prisma db seed` again.'
+    );
+  }
+
+  console.warn(
+    '[seed] No "regions" table — applying schema with `npx prisma db push` (non-production only). ' +
+      "For production, use `migrate deploy` instead of relying on this."
+  );
+  execSync("npx prisma db push --skip-generate", {
+    stdio: "inherit",
+    cwd: process.cwd(),
+    env: process.env,
+  });
+
+  if (!(await hasPublicTable("regions"))) {
+    throw new Error(
+      'Schema still missing after `db push`. Check DATABASE_URL and run `npx prisma migrate deploy` or `npx prisma db push` manually.'
+    );
+  }
 }
 
 async function main() {
   await clearDatabase();
+
+  await ensureSchemaForSeed();
 
   const hashedPassword = await bcrypt.hash("Password123!", 10);
 
@@ -101,7 +158,6 @@ async function main() {
     id?: number;
     regNo: string;
     name: string;
-    last_name: string;
     email: string;
     mobile: string;
     buyer: number;
@@ -115,8 +171,7 @@ async function main() {
     {
       id: 1,
       regNo: "EX000001",
-      name: "Default",
-      last_name: "Sponsor",
+      name: "Default Sponsor",
       email: "sponsor@example.com",
       mobile: "0123456789",
       buyer: 1,
@@ -129,8 +184,7 @@ async function main() {
     {
       id: 2,
       regNo: "EX000002",
-      name: "Ravi",
-      last_name: "Kumar",
+      name: "Ravi Kumar",
       email: "ravi.k@example.com",
       mobile: "9000000001",
       buyer: 1,
@@ -139,8 +193,7 @@ async function main() {
     {
       id: 3,
       regNo: "EX000003",
-      name: "Anita",
-      last_name: "Sharma",
+      name: "Anita Sharma",
       email: "anita.s@example.com",
       mobile: "9000000002",
       buyer: 0,
@@ -153,8 +206,7 @@ async function main() {
     {
       id: 4,
       regNo: "EX000004",
-      name: "Vikram",
-      last_name: "Singh",
+      name: "Vikram Singh",
       email: "vikram.s@example.com",
       mobile: "9000000003",
       buyer: 1,
@@ -163,8 +215,7 @@ async function main() {
     {
       id: 5,
       regNo: "EX000005",
-      name: "Priya",
-      last_name: "Nair",
+      name: "Priya Nair",
       email: "priya.n@example.com",
       mobile: "9000000004",
       buyer: 0,
@@ -177,8 +228,7 @@ async function main() {
     {
       id: 6,
       regNo: "EX000006",
-      name: "Arjun",
-      last_name: "Mehta",
+      name: "Arjun Mehta",
       email: "arjun.m@example.com",
       mobile: "9000000005",
       buyer: 1,
@@ -190,22 +240,28 @@ async function main() {
     },
   ];
 
+  const sponsorRegNo = "EX000001";
+
   const users = await Promise.all(
     userSeeds.map((u) => {
       const hasBank = u.bank_name !== undefined;
+      const isSponsor = u.regNo === sponsorRegNo;
       return prisma.user.create({
         data: {
           ...(u.id !== undefined ? { id: u.id } : {}),
           regNo: u.regNo,
+          referral_code: u.regNo,
           name: u.name,
-          last_name: u.last_name,
           email: u.email,
           mobile: u.mobile,
           password: hashedPassword,
           buyer: u.buyer,
           seller: u.seller,
+          sponser_id: isSponsor ? null : sponsorRegNo,
           status: 1,
           kyc_status: 1,
+          aadhaar_kyc_status: isSponsor ? 1 : null,
+          pan_kyc_status: isSponsor ? 1 : null,
           ...(hasBank && u.ifsc !== undefined && u.upi_id !== undefined && u.account_number !== undefined
             ? {
                 bank_name: u.bank_name,
@@ -358,8 +414,10 @@ async function main() {
     ],
   });
 
-  const tender1 = await prisma.tender.create({
-    data: {
+  const seedTenders = await hasPublicTable("tenders");
+  if (seedTenders) {
+    const tender1 = await prisma.tender.create({
+      data: {
       category_id: category.id,
       sub_category_id: subCategory.id,
       city_id: city.id,
@@ -382,11 +440,11 @@ async function main() {
       tender_status: "open",
       created_at: now(),
       updated_at: now(),
-    },
-  });
+      },
+    });
 
-  const tender2 = await prisma.tender.create({
-    data: {
+    const tender2 = await prisma.tender.create({
+      data: {
       category_id: category.id,
       sub_category_id: subCategory.id,
       city_id: city.id,
@@ -409,20 +467,20 @@ async function main() {
       tender_status: "open",
       created_at: now(),
       updated_at: now(),
-    },
-  });
+      },
+    });
 
-  await prisma.tenderWishlist.createMany({
-    data: [
+    await prisma.tenderWishlist.createMany({
+      data: [
       { user_id: seller1.id, tender_id: tender1.id, created_at: now(), updated_at: now() },
       { user_id: seller2.id, tender_id: tender1.id, created_at: now(), updated_at: now() },
       { user_id: both.id, tender_id: tender1.id, created_at: now(), updated_at: now() },
       { user_id: seller1.id, tender_id: tender2.id, created_at: now(), updated_at: now() },
-    ],
-  });
+      ],
+    });
 
-  await prisma.tenderInterest.createMany({
-    data: [
+    await prisma.tenderInterest.createMany({
+      data: [
       {
         user_id: seller1.id,
         tender_id: tender1.id,
@@ -444,11 +502,11 @@ async function main() {
         created_at: now(),
         updated_at: now(),
       },
-    ],
-  });
+      ],
+    });
 
-  await prisma.tenderParticipate.createMany({
-    data: [
+    await prisma.tenderParticipate.createMany({
+      data: [
       {
         user_id: seller1.id,
         tender_id: tender1.id,
@@ -506,8 +564,9 @@ async function main() {
         created_at: now(),
         updated_at: now(),
       },
-    ],
-  });
+      ],
+    });
+  }
 
   await prisma.deposit.createMany({
     data: [
@@ -720,8 +779,8 @@ async function main() {
       {
         regNo: buyer1.regNo!,
         name: buyer1.name!,
-        l_name: buyer1.last_name!,
-        m_name: "",
+        l_name: null,
+        m_name: null,
         mobile: buyer1.mobile!,
         pan_number: "ABCDE1234F",
         amount: new Prisma.Decimal("500000"),
@@ -731,14 +790,20 @@ async function main() {
         total_fee: new Prisma.Decimal("5900"),
         status: "submitted",
         remarks: "Seed application",
+        application_id: "LOAN-SEED-001",
+        bank_or_nbfc: "Demo NBFC",
+        login_date: now(),
+        approved_amount: null,
+        disbursed_amount: null,
+        total_incentive: null,
         created_at: now(),
         updated_at: now(),
       },
       {
         regNo: buyer2.regNo!,
         name: buyer2.name!,
-        l_name: buyer2.last_name!,
-        m_name: "",
+        l_name: null,
+        m_name: null,
         mobile: buyer2.mobile!,
         pan_number: "LMNOP9012Q",
         amount: new Prisma.Decimal("2500000"),
@@ -748,6 +813,12 @@ async function main() {
         total_fee: new Prisma.Decimal("17700"),
         status: "under_review",
         remarks: "Working capital",
+        application_id: "LOAN-SEED-002",
+        bank_or_nbfc: null,
+        login_date: null,
+        approved_amount: new Prisma.Decimal("2000000"),
+        disbursed_amount: null,
+        total_incentive: new Prisma.Decimal("5000"),
         created_at: now(),
         updated_at: now(),
       },
@@ -759,28 +830,44 @@ async function main() {
       {
         regNo: seller1.regNo!,
         name: seller1.name!,
-        l_name: seller1.last_name!,
-        m_name: "",
+        l_name: null,
+        m_name: null,
         mobile: seller1.mobile!,
         pan_number: "FGHIJ5678K",
         amount: new Prisma.Decimal("15000"),
         insurance_type: "motor",
         vehicle_number: "DL01AB1234",
         status: "pending",
+        application_id: "INS-SEED-001",
+        provider: null,
+        login_date: null,
+        approved_amount: null,
+        disbursed_amount: null,
+        disbursed_display: null,
+        total_incentive: null,
+        incentive_display: null,
         created_at: now(),
         updated_at: now(),
       },
       {
         regNo: seller2.regNo!,
         name: seller2.name!,
-        l_name: seller2.last_name!,
-        m_name: "",
+        l_name: null,
+        m_name: null,
         mobile: seller2.mobile!,
         pan_number: "RSTUV3456W",
         amount: new Prisma.Decimal("8500"),
         insurance_type: "health",
         vehicle_number: null,
         status: "approved",
+        application_id: "INS-SEED-002",
+        provider: "Demo Insurer",
+        login_date: now(),
+        approved_amount: new Prisma.Decimal("8500"),
+        disbursed_amount: new Prisma.Decimal("8200"),
+        disbursed_display: null,
+        total_incentive: new Prisma.Decimal("400"),
+        incentive_display: null,
         created_at: now(),
         updated_at: now(),
       },
@@ -793,8 +880,8 @@ async function main() {
         regNo: buyer1.regNo!,
         application_id: "APP-SEED-001",
         name: buyer1.name!,
-        l_name: buyer1.last_name!,
-        m_name: "",
+        l_name: null,
+        m_name: null,
         mobile: buyer1.mobile!,
         pan_number: "ABCDE1234F",
         amount: new Prisma.Decimal("500"),
@@ -808,8 +895,8 @@ async function main() {
         regNo: buyer2.regNo!,
         application_id: "APP-SEED-002",
         name: buyer2.name!,
-        l_name: buyer2.last_name!,
-        m_name: "",
+        l_name: null,
+        m_name: null,
         mobile: buyer2.mobile!,
         pan_number: "LMNOP9012Q",
         amount: new Prisma.Decimal("500"),
@@ -821,6 +908,134 @@ async function main() {
       },
     ],
   });
+
+  if (await hasPublicTable("referrals")) {
+    await prisma.referral.createMany({
+      data: [
+        {
+          referrerUserId: users[0]!.id,
+          referredUserId: buyer1.id,
+          status: "completed",
+          rewardGiven: true,
+          createdAt: now(),
+          completedAt: now(),
+        },
+        {
+          referrerUserId: users[0]!.id,
+          referredUserId: seller1.id,
+          status: "pending",
+          rewardGiven: false,
+          createdAt: now(),
+          completedAt: null,
+        },
+      ],
+    });
+  }
+
+  if (await hasPublicTable("digital_declaration_audits")) {
+    await prisma.digitalDeclarationAudit.create({
+      data: {
+        userId: buyer1.id,
+        regNo: buyer1.regNo ?? undefined,
+        agreed: true,
+        ipAddress: "127.0.0.1",
+        context: "seed",
+        declarationVersion: "v1",
+        fullTextSnapshot: "Seed acceptance snapshot",
+        createdAt: now(),
+      },
+    });
+  }
+
+  if (await hasPublicTable("mobile_recharge_requests")) {
+    await prisma.mobileRechargeRequest.createMany({
+      data: [
+        {
+          regNo: buyer1.regNo!,
+          mobile: buyer1.mobile!,
+          operator: "Jio",
+          amount: new Prisma.Decimal("199"),
+          created_at: now(),
+        },
+        {
+          regNo: both.regNo!,
+          mobile: both.mobile!,
+          operator: "Airtel",
+          amount: new Prisma.Decimal("349"),
+          created_at: now(),
+        },
+      ],
+    });
+  }
+
+  if (await hasPublicTable("cashfree_orders")) {
+    await prisma.cashfreeOrder.createMany({
+      data: [
+        {
+          order_id: "cf_order_seed_pkg_001",
+          reg_no: buyer1.regNo!,
+          purpose: "package",
+          order_amount: new Prisma.Decimal("5900"),
+          currency: "INR",
+          status: "paid",
+          meta: { seed: true },
+          cf_payment_id: "cf_seed_pay_001",
+        },
+        {
+          order_id: "cf_order_seed_cibil_001",
+          reg_no: buyer2.regNo!,
+          purpose: "cibil",
+          order_amount: new Prisma.Decimal("590"),
+          currency: "INR",
+          status: "pending",
+          cf_payment_id: null,
+        },
+      ],
+    });
+  }
+
+  if (await hasPublicTable("hold_earn_requests")) {
+    await prisma.holdEarnRequest.createMany({
+      data: [
+        {
+          regNo: both.regNo!,
+          amount: new Prisma.Decimal("100000"),
+          fundSource: "savings",
+          birthDate: new Date("1990-05-15"),
+          lockMonths: 12,
+          agreementDate: now(),
+          autoRenew: false,
+          rewardFrequency: "monthly",
+          lastRewardAt: null,
+          status: "locked",
+          lockedAt: now(),
+          withdrawnAt: null,
+          penaltyAmount: null,
+          tdsAmount: null,
+          gstAmount: null,
+          netAmount: null,
+        },
+        {
+          regNo: seller1.regNo!,
+          amount: new Prisma.Decimal("50000"),
+          fundSource: "fd",
+          birthDate: null,
+          lockMonths: 6,
+          agreementDate: null,
+          autoRenew: true,
+          rewardFrequency: "monthly",
+          lastRewardAt: null,
+          status: "pending",
+          lockedAt: null,
+          withdrawnAt: null,
+          penaltyAmount: null,
+          tdsAmount: null,
+          gstAmount: null,
+          netAmount: null,
+        },
+      ],
+    });
+  }
 
   console.log(`Seeded ${users.length} users and related rows.`);
 }

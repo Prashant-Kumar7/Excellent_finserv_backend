@@ -13,7 +13,6 @@ model User {
   /// Public referral code for sharing (defaults to regNo for new users).
   referral_code String? @unique
   name       String?
-  last_name  String?
   father_name String?
   dob        DateTime?
   email      String?  @unique

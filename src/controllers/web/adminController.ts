@@ -135,7 +135,6 @@ export async function depositList(req: AdminRequest, res: Response) {
     return {
       ...d,
       name: u?.name ?? null,
-      last_name: u?.last_name ?? null,
       user_mobile: u?.mobile ?? null
     };
   });

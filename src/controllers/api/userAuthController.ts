@@ -258,8 +258,7 @@ export async function registerWithOtp(req: Request, res: Response) {
   const body = req.body as Record<string, unknown>;
   const mobile = readFormField(body, "mobile");
   const otp = readFormField(body, "otp");
-  const name = readFormField(body, "name");
-  const lastName = readFormField(body, "last_name");
+  const name = (readFormField(body, "name") ?? "").trim();
   const sponsorId = (readFormField(body, "sponser_id") || readFormField(body, "sponser_mobile"))
     .trim()
     .toUpperCase();
@@ -273,7 +272,7 @@ export async function registerWithOtp(req: Request, res: Response) {
     !otp ||
     !/^[0-9]{4}$/.test(String(otp)) ||
     !name ||
-    !lastName ||
+    name.length < 2 ||
     !sponsorId ||
     !REGNO_REGEX.test(sponsorId) ||
     !password ||
@@ -340,7 +339,6 @@ export async function registerWithOtp(req: Request, res: Response) {
         data: {
           mobile,
           name,
-          last_name: lastName,
           password: hashedPassword,
           sponser_id: sponsor.regNo ?? null,
           regNo,

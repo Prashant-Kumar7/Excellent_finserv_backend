@@ -38,7 +38,7 @@ export async function adminUsersUpdateStatus(req: AdminRequest, res: Response) {
 export async function adminUsersUpdateDetails(req: AdminRequest, res: Response) {
   const id = Number(req.params.user);
   const body = req.body as Record<string, unknown>;
-  const editable = ["name", "last_name", "email", "mobile", "companyName", "companyNumber", "area", "gst_number"];
+  const editable = ["name", "email", "mobile", "companyName", "companyNumber", "area", "gst_number"];
   const data: Record<string, unknown> = {};
   for (const field of editable) {
     if (field in body) {
