@@ -9,7 +9,8 @@
     "postinstall": "prisma generate && npm run build",
     "start": "node dist/index.js",
     "migrate:regno": "npx tsx prisma/scripts/migrate-regno-to-ex.ts",
-    "migrate:regno:dry": "npx tsx prisma/scripts/migrate-regno-to-ex.ts --dry-run"
+    "migrate:regno:dry": "npx tsx prisma/scripts/migrate-regno-to-ex.ts --dry-run",
+    "prisma:sync-checksums": "node prisma/scripts/sync-migration-checksums.mjs"
   },
   "keywords": [],
   "author": "",

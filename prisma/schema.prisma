@@ -33,11 +33,13 @@ model User {
   current_house_no String?
   current_village  String?
   current_city     String?
+  current_district String?
   current_state    String?
   current_pincode  String?
   permanent_house_no String?
   permanent_village  String?
   permanent_city     String?
+  permanent_district String?
   permanent_state    String?
   permanent_pincode  String?
   buyer      Int?

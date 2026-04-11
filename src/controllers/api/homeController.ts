@@ -134,11 +134,13 @@ async function getUserForClientById(userId: number) {
       current_house_no: true,
       current_village: true,
       current_city: true,
+      current_district: true,
       current_state: true,
       current_pincode: true,
       permanent_house_no: true,
       permanent_village: true,
       permanent_city: true,
+      permanent_district: true,
       permanent_state: true,
       permanent_pincode: true
     }
@@ -1762,7 +1764,11 @@ function extractAadhaarProfileUpdate(input: Record<string, unknown>): Record<str
   const house = sanitizeAadhaarAddressLine(houseRaw);
   const localityRaw = deepFindStringByKeys(input, ["locality", "street", "landmark", "village", "subdistrict", "district"]);
   const locality = sanitizeAadhaarAddressLine(localityRaw);
-  const city = deepFindStringByKeys(input, ["city", "district", "post_office", "po"]);
+  const districtRaw = deepFindStringByKeys(input, ["district", "dist", "subdistrict"]);
+  const district = sanitizeAadhaarAddressLine(districtRaw);
+  const cityRaw = deepFindStringByKeys(input, ["city", "post_office", "po", "vtc"]);
+  let city = sanitizeAadhaarAddressLine(cityRaw);
+  if (!city && district) city = district;
   const state = deepFindStringByKeys(input, ["state"]);
   const pincodeRaw = deepFindStringByKeys(input, ["pincode", "pin_code", "postal_code", "zip"]);
   const pincode = normalizeDigits(pincodeRaw).slice(0, 6);
@@ -1774,6 +1780,10 @@ function extractAadhaarProfileUpdate(input: Record<string, unknown>): Record<str
   if (locality) {
     out.current_village = locality;
     out.permanent_village = locality;
+  }
+  if (district) {
+    out.current_district = district;
+    out.permanent_district = district;
   }
   if (city) {
     out.current_city = city;
@@ -1858,11 +1868,13 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
       current_house_no: true,
       current_village: true,
       current_city: true,
+      current_district: true,
       current_state: true,
       current_pincode: true,
       permanent_house_no: true,
       permanent_village: true,
       permanent_city: true,
+      permanent_district: true,
       permanent_state: true,
       permanent_pincode: true,
     },
@@ -1884,6 +1896,7 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
       ["permanent_house_no", currentUser?.permanent_house_no],
       ["permanent_village", currentUser?.permanent_village],
       ["permanent_city", currentUser?.permanent_city],
+      ["permanent_district", currentUser?.permanent_district],
       ["permanent_state", currentUser?.permanent_state],
       ["permanent_pincode", currentUser?.permanent_pincode],
     ];
@@ -1906,11 +1919,13 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
     current_house_no?: string | null;
     current_village?: string | null;
     current_city?: string | null;
+    current_district?: string | null;
     current_state?: string | null;
     current_pincode?: string | null;
     permanent_house_no?: string | null;
     permanent_village?: string | null;
     permanent_city?: string | null;
+    permanent_district?: string | null;
     permanent_state?: string | null;
     permanent_pincode?: string | null;
     user_image?: string;
@@ -1962,6 +1977,8 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
   if (currentVillage !== undefined) data.current_village = currentVillage;
   const currentCity = multipartString(body, "current_city");
   if (currentCity !== undefined) data.current_city = currentCity;
+  const currentDistrict = multipartString(body, "current_district");
+  if (currentDistrict !== undefined) data.current_district = currentDistrict;
   const currentState = multipartString(body, "current_state");
   if (currentState !== undefined) data.current_state = currentState;
   const currentPincode = multipartString(body, "current_pincode");
@@ -1973,6 +1990,8 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
   if (permanentVillage !== undefined && !lockedTextFields.has("permanent_village")) data.permanent_village = permanentVillage;
   const permanentCity = multipartString(body, "permanent_city");
   if (permanentCity !== undefined && !lockedTextFields.has("permanent_city")) data.permanent_city = permanentCity;
+  const permanentDistrict = multipartString(body, "permanent_district");
+  if (permanentDistrict !== undefined && !lockedTextFields.has("permanent_district")) data.permanent_district = permanentDistrict;
   const permanentState = multipartString(body, "permanent_state");
   if (permanentState !== undefined && !lockedTextFields.has("permanent_state")) data.permanent_state = permanentState;
   const permanentPincode = multipartString(body, "permanent_pincode");
