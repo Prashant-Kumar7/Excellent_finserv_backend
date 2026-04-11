@@ -35,12 +35,8 @@ model User {
   current_district String?
   current_state    String?
   current_pincode  String?
-  permanent_house_no String?
-  permanent_village  String?
-  permanent_city     String?
-  permanent_district String?
-  permanent_state    String?
-  permanent_pincode  String?
+  /// Full permanent address (e.g. from Aadhaar); single multiline string.
+  permanent_address String? @db.Text
   buyer      Int?
   seller     Int?
   status     Int?

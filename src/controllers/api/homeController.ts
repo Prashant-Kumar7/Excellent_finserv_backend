@@ -136,12 +136,7 @@ async function getUserForClientById(userId: number) {
       current_district: true,
       current_state: true,
       current_pincode: true,
-      permanent_house_no: true,
-      permanent_village: true,
-      permanent_city: true,
-      permanent_district: true,
-      permanent_state: true,
-      permanent_pincode: true
+      permanent_address: true
     }
   });
   if (!currentUser) return null;
@@ -1721,6 +1716,36 @@ function parseFatherNameFromSoDoLine(raw: string): string {
   return name;
 }
 
+/** Join Aadhaar address parts into one multiline string for `permanent_address`. */
+function buildPermanentAddressFromParts(parts: {
+  house: string;
+  locality: string;
+  district: string;
+  city: string;
+  state: string;
+  pincode: string;
+}): string {
+  const lines: string[] = [];
+  const push = (s: string) => {
+    const t = s.trim();
+    if (!t) return;
+    if (lines.includes(t)) return;
+    lines.push(t);
+  };
+  push(parts.house);
+  push(parts.locality);
+  push(parts.district);
+  push(parts.city);
+  const state = parts.state.trim();
+  const pin = parts.pincode.trim();
+  if (state && pin) push(`${state} ${pin}`);
+  else {
+    push(state);
+    push(pin);
+  }
+  return lines.join("\n");
+}
+
 function extractAadhaarProfileUpdate(input: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const fullName = deepFindStringByKeys(input, ["full_name", "name", "user_name"]);
@@ -1772,29 +1797,46 @@ function extractAadhaarProfileUpdate(input: Record<string, unknown>): Record<str
   const pincodeRaw = deepFindStringByKeys(input, ["pincode", "pin_code", "postal_code", "zip"]);
   const pincode = normalizeDigits(pincodeRaw).slice(0, 6);
 
+  const fullAddressRaw = deepFindStringByKeys(input, [
+    "address",
+    "full_address",
+    "permanent_address",
+    "residential_address",
+    "street_address"
+  ]);
+  const fullAddress = String(fullAddressRaw ?? "").trim();
+
   if (house) {
     out.current_house_no = house;
-    out.permanent_house_no = house;
   }
   if (locality) {
     out.current_village = locality;
-    out.permanent_village = locality;
   }
   if (district) {
     out.current_district = district;
-    out.permanent_district = district;
   }
   if (city) {
     out.current_city = city;
-    out.permanent_city = city;
   }
   if (state) {
     out.current_state = state;
-    out.permanent_state = state;
   }
   if (pincode.length === 6) {
     out.current_pincode = pincode;
-    out.permanent_pincode = pincode;
+  }
+
+  if (fullAddress) {
+    out.permanent_address = fullAddress;
+  } else {
+    const built = buildPermanentAddressFromParts({
+      house,
+      locality,
+      district,
+      city: city ?? "",
+      state: String(state ?? ""),
+      pincode
+    });
+    if (built.trim()) out.permanent_address = built;
   }
   return out;
 }
@@ -1870,12 +1912,7 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
       current_district: true,
       current_state: true,
       current_pincode: true,
-      permanent_house_no: true,
-      permanent_village: true,
-      permanent_city: true,
-      permanent_district: true,
-      permanent_state: true,
-      permanent_pincode: true,
+      permanent_address: true,
     },
   });
   const legacyAadhaarFromOldKyc =
@@ -1892,12 +1929,7 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
       ["father_name", currentUser?.father_name],
       ["dob", currentUser?.dob ? currentUser.dob.toISOString() : null],
       ["aadhar_number", currentUser?.aadhar_number],
-      ["permanent_house_no", currentUser?.permanent_house_no],
-      ["permanent_village", currentUser?.permanent_village],
-      ["permanent_city", currentUser?.permanent_city],
-      ["permanent_district", currentUser?.permanent_district],
-      ["permanent_state", currentUser?.permanent_state],
-      ["permanent_pincode", currentUser?.permanent_pincode],
+      ["permanent_address", currentUser?.permanent_address],
     ];
     for (const [k, v] of lockCandidates) {
       if (String(v ?? "").trim().length > 0) lockedTextFields.add(k);
@@ -1921,12 +1953,7 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
     current_district?: string | null;
     current_state?: string | null;
     current_pincode?: string | null;
-    permanent_house_no?: string | null;
-    permanent_village?: string | null;
-    permanent_city?: string | null;
-    permanent_district?: string | null;
-    permanent_state?: string | null;
-    permanent_pincode?: string | null;
+    permanent_address?: string | null;
     user_image?: string;
     aadhar_front?: string;
     aadhar_back?: string;
@@ -1983,18 +2010,10 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
   const currentPincode = multipartString(body, "current_pincode");
   if (currentPincode !== undefined) data.current_pincode = currentPincode;
 
-  const permanentHouseNo = multipartString(body, "permanent_house_no");
-  if (permanentHouseNo !== undefined && !lockedTextFields.has("permanent_house_no")) data.permanent_house_no = permanentHouseNo;
-  const permanentVillage = multipartString(body, "permanent_village");
-  if (permanentVillage !== undefined && !lockedTextFields.has("permanent_village")) data.permanent_village = permanentVillage;
-  const permanentCity = multipartString(body, "permanent_city");
-  if (permanentCity !== undefined && !lockedTextFields.has("permanent_city")) data.permanent_city = permanentCity;
-  const permanentDistrict = multipartString(body, "permanent_district");
-  if (permanentDistrict !== undefined && !lockedTextFields.has("permanent_district")) data.permanent_district = permanentDistrict;
-  const permanentState = multipartString(body, "permanent_state");
-  if (permanentState !== undefined && !lockedTextFields.has("permanent_state")) data.permanent_state = permanentState;
-  const permanentPincode = multipartString(body, "permanent_pincode");
-  if (permanentPincode !== undefined && !lockedTextFields.has("permanent_pincode")) data.permanent_pincode = permanentPincode;
+  const permanentAddress = multipartString(body, "permanent_address");
+  if (permanentAddress !== undefined && !lockedTextFields.has("permanent_address")) {
+    data.permanent_address = permanentAddress;
+  }
 
   const userImage = files.find((f) => f.fieldname === "user_image");
   if (userImage?.buffer?.length) {
