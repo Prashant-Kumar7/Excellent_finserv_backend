@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { prisma } from "../../shared/db.js";
-import { signUserToken } from "../../shared/auth/jwt.js";
+import { signUserToken, userJwtExpiresInSeconds } from "../../shared/auth/jwt.js";
 import { generateRandomExSixUniqueDigitRegNo, isStoredMemberRegNo } from "../../shared/regNo.js";
 
 type UserRow = {
@@ -45,7 +45,7 @@ function tokenResponse(user: UserRow) {
     status: "done",
     access_token: signUserToken({ sub: user.id, mobile: user.mobile, regNo: user.regNo }),
     token_type: "bearer",
-    expires_in: Number(process.env.JWT_TTL ?? 43200) * 60
+    expires_in: userJwtExpiresInSeconds()
   };
 }
 
@@ -324,7 +324,9 @@ export async function registerWithOtp(req: Request, res: Response) {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const userId = await prisma.$transaction(async (tx) => {
-      const referralCode = referralCodeRaw.trim().toUpperCase();
+      const referralCode = String(referralCodeRaw ?? "")
+        .trim()
+        .toUpperCase();
       let referrerUserId: number | null = null;
       if (referralCode.length > 0) {
         const referrer = await tx.user.findFirst({
@@ -339,6 +341,7 @@ export async function registerWithOtp(req: Request, res: Response) {
         }
       }
 
+      const now = new Date();
       const created = await tx.user.create({
         data: {
           mobile,
@@ -346,7 +349,12 @@ export async function registerWithOtp(req: Request, res: Response) {
           password: hashedPassword,
           sponser_id: sponsor.regNo ?? null,
           regNo,
-          referral_code: regNo
+          referral_code: regNo,
+          status: 1,
+          buyer: 0,
+          seller: 0,
+          created_at: now,
+          updated_at: now
         },
         select: { id: true }
       });
@@ -383,7 +391,9 @@ export async function registerWithOtp(req: Request, res: Response) {
         regNo
       })
     );
-  } catch {
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("registerWithOtp failed:", err);
     return res.status(500).json({ status: false, message: "Registration failed. Please try again." });
   }
 }
