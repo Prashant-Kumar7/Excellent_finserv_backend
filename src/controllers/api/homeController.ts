@@ -1523,6 +1523,108 @@ export async function updatePassword(req: AuthenticatedRequest, res: Response) {
   return res.json({ status: true, message: "Password updated successfully" });
 }
 
+/**
+ * Permanently deletes the authenticated user and related rows. Uses password confirmation.
+ * Returns HTTP 200 with JSON for all outcomes so mobile clients that only parse 2xx bodies still see `message`.
+ */
+export async function deleteAccount(req: AuthenticatedRequest, res: Response) {
+  const authUser = req.user;
+  if (!authUser) {
+    return res.json({ status: false, message: "Invalid or expired token" });
+  }
+
+  const password = multipartString(req.body, "password");
+  if (!password) {
+    return res.json({ status: false, message: "Password is required." });
+  }
+
+  const full = await prisma.user.findUnique({
+    where: { id: authUser.id },
+    select: { id: true, password: true, regNo: true, mobile: true }
+  });
+  if (!full) {
+    return res.json({ status: false, message: "User not found." });
+  }
+  if (!full.password) {
+    return res.json({
+      status: false,
+      message: "Password is not set on this account. Use Forgot Password, then try again."
+    });
+  }
+
+  const ok = await bcrypt.compare(password, String(full.password));
+  if (!ok) {
+    return res.json({ status: false, message: "Incorrect password." });
+  }
+
+  const userId = full.id;
+  const regNo = full.regNo?.trim() ?? "";
+
+  try {
+    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const myTenders = await tx.tender.findMany({
+        where: { user_id: userId },
+        select: { id: true }
+      });
+      const myTenderIds = myTenders.map((t) => t.id).filter((id): id is number => id != null);
+      if (myTenderIds.length > 0) {
+        await tx.tenderParticipate.deleteMany({ where: { tender_id: { in: myTenderIds } } });
+        await tx.tenderInterest.deleteMany({ where: { tender_id: { in: myTenderIds } } });
+        await tx.tenderWishlist.deleteMany({ where: { tender_id: { in: myTenderIds } } });
+        await tx.tender.deleteMany({ where: { id: { in: myTenderIds } } });
+      }
+
+      await tx.tenderParticipate.deleteMany({ where: { user_id: userId } });
+      await tx.tenderInterest.deleteMany({ where: { user_id: userId } });
+      await tx.tenderWishlist.deleteMany({ where: { user_id: userId } });
+
+      await tx.referral.deleteMany({
+        where: { OR: [{ referrerUserId: userId }, { referredUserId: userId }] }
+      });
+
+      await tx.digitalDeclarationAudit.deleteMany({ where: { userId } });
+
+      await tx.product.deleteMany({ where: { user_id: userId } });
+
+      await tx.rFQ.deleteMany({
+        where: { OR: [{ buyer_id: userId }, { seller_id: userId }] }
+      });
+
+      if (regNo) {
+        await tx.deposit.deleteMany({ where: { regNo } });
+        await tx.supportTicket.deleteMany({ where: { regNo } });
+        await tx.coin.deleteMany({ where: { regNo } });
+        await tx.wallet.deleteMany({ where: { regNo } });
+        await tx.bank.deleteMany({ where: { regNo } });
+        await tx.package.deleteMany({ where: { regNo } });
+        await tx.perday.deleteMany({ where: { regNo } });
+        await tx.mobileRechargeRequest.deleteMany({ where: { regNo } });
+        await tx.loan.deleteMany({ where: { regNo } });
+        await tx.insurance.deleteMany({ where: { regNo } });
+        await tx.cibileReportRequest.deleteMany({ where: { regNo } });
+        await tx.cashfreeOrder.deleteMany({ where: { reg_no: regNo } });
+        await tx.holdEarnRequest.deleteMany({ where: { regNo } });
+      }
+
+      const mobile = full.mobile?.trim();
+      if (mobile) {
+        await tx.user.updateMany({ where: { sponser_id: mobile }, data: { sponser_id: null } });
+        await tx.otp.deleteMany({ where: { mobile } });
+      }
+
+      await tx.user.delete({ where: { id: userId } });
+    });
+
+    return res.json({ status: "done", message: "Your account has been deleted." });
+  } catch (e) {
+    console.error("deleteAccount failed", e);
+    return res.json({
+      status: false,
+      message: "Could not delete account. Please try again or contact support."
+    });
+  }
+}
+
 function multipartString(body: Request["body"], key: string): string | undefined {
   const raw = body?.[key];
   if (raw == null) return undefined;

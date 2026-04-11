@@ -26,6 +26,7 @@ import {
   coinHistory,
   createTicket,
   dashboard,
+  deleteAccount,
   deposit,
   deposit2,
   depositHistory,
@@ -155,6 +156,7 @@ protectedUserRouter.post("/kyc/bank/reverse-penny-drop/create", createBankRevers
 protectedUserRouter.get("/kyc/bank/reverse-penny-drop/status", bankReversePennyDropStatus);
 protectedUserRouter.post("/profile/avatar", uploadProfileAvatar);
 protectedUserRouter.post("/update-password", updatePassword);
+protectedUserRouter.post("/account/delete", deleteAccount);
 protectedUserRouter.post("/wishlist/add", wishlistAdd);
 protectedUserRouter.post("/wishlist/remove", wishlistRemove);
 protectedUserRouter.get("/wishlist", wishlistIndex);
