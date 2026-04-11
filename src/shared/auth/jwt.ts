@@ -27,18 +27,27 @@ export function verifyUserToken(token: string): JwtPayload {
     throw new Error("Invalid token payload");
   }
 
-  if (
-    typeof decoded.sub !== "number" ||
-    typeof decoded.mobile !== "string" ||
-    typeof decoded.regNo !== "string"
-  ) {
+  const subRaw = (decoded as { sub?: unknown }).sub;
+  const sub =
+    typeof subRaw === "number" && Number.isFinite(subRaw)
+      ? subRaw
+      : typeof subRaw === "string" && /^\d+$/.test(subRaw)
+        ? Number(subRaw)
+        : NaN;
+  if (!Number.isFinite(sub) || sub <= 0) {
+    throw new Error("Invalid token claims");
+  }
+
+  const mobile = (decoded as { mobile?: unknown }).mobile;
+  const regNo = (decoded as { regNo?: unknown }).regNo;
+  if (typeof mobile !== "string" || typeof regNo !== "string") {
     throw new Error("Invalid token claims");
   }
 
   return {
-    sub: decoded.sub,
-    mobile: decoded.mobile,
-    regNo: decoded.regNo
+    sub,
+    mobile,
+    regNo
   };
 }
 

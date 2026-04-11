@@ -52,6 +52,9 @@ function tokenResponse(user: UserRow) {
 async function createOtp(mobile: string, action: "register" | "login" | "forget"): Promise<number> {
   const otp = Math.floor(1000 + Math.random() * 9000);
   const now = new Date();
+  if (action === "register") {
+    await prisma.otp.deleteMany({ where: { mobile, action: "register" } });
+  }
   await prisma.otp.create({
     data: {
       mobile,
@@ -207,8 +210,10 @@ export async function mobileLogin(req: Request, res: Response) {
 }
 
 export async function loginWithOtp(req: Request, res: Response) {
-  const { mobile, otp } = req.body as { mobile?: string; otp?: string };
-  if (!mobile || !MOBILE_REGEX.test(mobile) || !otp || !/^[0-9]{4}$/.test(String(otp))) {
+  const body = req.body as Record<string, unknown>;
+  const mobile = readFormField(body, "mobile");
+  const otpNorm = readFormField(body, "otp").replace(/\D/g, "").slice(0, 4);
+  if (!mobile || !MOBILE_REGEX.test(mobile) || otpNorm.length !== 4) {
     return res.status(422).json({ status: false, v_errors: { mobile: ["Invalid mobile/otp"] } });
   }
 
@@ -216,7 +221,7 @@ export async function loginWithOtp(req: Request, res: Response) {
   const otpRowRaw = await prisma.otp.findFirst({
     where: {
       mobile,
-      otp: String(otp),
+      otp: otpNorm,
       action: "login",
       created_at: { gte: threshold }
     },
@@ -257,7 +262,7 @@ export async function loginWithOtp(req: Request, res: Response) {
 export async function registerWithOtp(req: Request, res: Response) {
   const body = req.body as Record<string, unknown>;
   const mobile = readFormField(body, "mobile");
-  const otp = readFormField(body, "otp");
+  const otpNorm = readFormField(body, "otp").replace(/\D/g, "").slice(0, 4);
   const name = (readFormField(body, "name") ?? "").trim();
   const sponsorId = (readFormField(body, "sponser_id") || readFormField(body, "sponser_mobile"))
     .trim()
@@ -269,8 +274,7 @@ export async function registerWithOtp(req: Request, res: Response) {
   if (
     !mobile ||
     !MOBILE_REGEX.test(mobile) ||
-    !otp ||
-    !/^[0-9]{4}$/.test(String(otp)) ||
+    otpNorm.length !== 4 ||
     !name ||
     name.length < 2 ||
     !sponsorId ||
@@ -286,7 +290,7 @@ export async function registerWithOtp(req: Request, res: Response) {
     const otpData = await prisma.otp.findFirst({
       where: {
         mobile,
-        otp: String(otp),
+        otp: otpNorm,
         action: "register",
         created_at: { gte: threshold }
       },
