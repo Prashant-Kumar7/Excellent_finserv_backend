@@ -325,6 +325,7 @@ model Wallet {
   created_at    DateTime? @default(now())
   updated_at    DateTime? @updatedAt
 
+  @@unique([regNo, source_id, level])
   @@map("wallet")
 }
 
@@ -346,7 +347,7 @@ model Package {
   regNo        String?
   amount       Decimal?
   status       String?
-  txn          String?
+  txn          String?  @unique
   slip         String?
   payment_method String?
   gst          Decimal?
@@ -530,5 +531,17 @@ model HoldEarnRequest {
   createdAt      DateTime @default(now())
 
   @@map("hold_earn_requests")
+}
+
+/// One row per user/day/sweep-type to guarantee idempotent daily sweep.
+model DailySweepLock {
+  id        Int      @id @default(autoincrement())
+  regNo     String
+  sweepType String
+  sweepDate String
+  createdAt DateTime @default(now())
+
+  @@unique([regNo, sweepType, sweepDate])
+  @@map("daily_sweep_locks")
 }
 

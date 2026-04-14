@@ -8,6 +8,7 @@ import multer from "multer";
 import { apiRouter } from "./routes/api.js";
 import { webRouter } from "./routes/web.js";
 import { startDailyIncomeSweepScheduler } from "./services/dailyIncomeSweep.js";
+import { startCashfreeRecoveryScheduler } from "./services/cashfreeRecoveryService.js";
 
 dotenv.config();
 
@@ -38,4 +39,5 @@ app.listen(PORT, () => {
 });
 
 startDailyIncomeSweepScheduler();
+startCashfreeRecoveryScheduler();
 

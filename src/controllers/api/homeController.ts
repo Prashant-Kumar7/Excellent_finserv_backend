@@ -9,7 +9,7 @@ function clientIp(req: Request): string {
 import bcrypt from "bcryptjs";
 import type { AuthenticatedRequest } from "../../shared/middleware/userAuth.js";
 import { prisma } from "../../shared/db.js";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { cashfreeCreatePgOrder, normalizeIndianMobile10 } from "../../shared/cashfreePg.js";
 import {
   createDigilockerUrl,
@@ -100,6 +100,18 @@ function packageNameByAmount(amount: number) {
   return "Free ID";
 }
 
+function sumAmountRows(rows: Array<{ amount: unknown }>): number {
+  let paise = 0;
+  for (const row of rows) {
+    paise += Math.round(Number(row.amount ?? 0) * 100);
+  }
+  return paise / 100;
+}
+
+function sumSettledAmountRows(rows: Array<{ amount: unknown; status?: unknown }>): number {
+  return sumAmountRows(rows.filter((row) => row.status == null || isCompletedStatus(row.status)));
+}
+
 /** Same profile shape as dashboard `user` for client screens (e.g. history). */
 async function getUserForClientById(userId: number) {
   const currentUser = await prisma.user.findFirst({
@@ -172,10 +184,19 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
     prisma.setting.findFirst(),
     prisma.perday.findFirst({ where: { regNo }, orderBy: { id: "desc" } })
   ]);
-  const sum = (arr: Array<{ amount: any; comment?: string | null }>, comment?: string) =>
-    arr
-      .filter((x) => (comment ? x.comment === comment : true))
-      .reduce((a, b) => a + Number(b.amount ?? 0), 0);
+  const sum = (
+    arr: Array<{ amount: any; comment?: string | null; status?: string | null }>,
+    comment?: string,
+    settledOnly = false
+  ) =>
+    sumAmountRows(
+      arr.filter((x) => {
+        if (comment && x.comment !== comment) return false;
+        if (!settledOnly) return true;
+        if (!Object.prototype.hasOwnProperty.call(x, "status")) return true;
+        return x.status == null || isCompletedStatus(x.status);
+      })
+    );
   const packageAmount = Number(pkg?.amount ?? 0);
   const settingsOut = settings
     ? {
@@ -192,9 +213,9 @@ export async function dashboard(req: AuthenticatedRequest, res: Response) {
   return res.json({
     status: "done",
     user: userForClient,
-    bank_balance: sum(bankRows),
-    income_balance: sum(walletRows),
-    total_deposit: sum(bankRows),
+    bank_balance: sum(bankRows, undefined, true),
+    income_balance: sum(walletRows, undefined, true),
+    total_deposit: await approvedDepositPrincipalSum(regNo),
     settings: settingsOut,
     Referral_Income: sum(coinRows, "Referral_Income") + sum(coinRows, "Self_Income"),
     Wallet_team_Income: sum(walletRows, "Wallet_team_Income"),
@@ -392,7 +413,8 @@ function safePeriodCount(from: Date, to: Date, freq: "daily" | "monthly"): numbe
     const ms = to.getTime() - from.getTime();
     return Math.floor(ms / (24 * 60 * 60 * 1000));
   }
-  const months = (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
+  let months = (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
+  if (to.getDate() < from.getDate()) months -= 1;
   return Math.max(0, months);
 }
 
@@ -404,27 +426,37 @@ async function distributeHoldEarnRewardsForUser(regNo: string) {
   });
   for (const h of active) {
     const freq = (h.rewardFrequency === "daily" ? "daily" : "monthly") as "daily" | "monthly";
-    const from = h.lastRewardAt ?? h.lockedAt ?? h.createdAt;
-    if (!from) continue;
-    const periods = safePeriodCount(from, now, freq);
-    if (periods <= 0) continue;
     const ratePct = holdEarnRatePercent(freq);
     if (!Number.isFinite(ratePct) || ratePct <= 0) continue;
     const principal = Number(h.amount ?? 0);
     if (!Number.isFinite(principal) || principal <= 0) continue;
-    const rewardEach = roundMoney((principal * ratePct) / 100);
-    const total = roundMoney(rewardEach * periods);
-    if (total <= 0) continue;
-    await prisma.coin.create({
-      data: {
-        regNo,
-        amount: total,
-        comment: `hold_earn_bonus_${h.id}`,
-      },
-    });
-    await prisma.holdEarnRequest.update({
-      where: { id: h.id },
-      data: { lastRewardAt: now },
+    await prisma.$transaction(async (tx) => {
+      const fresh = await tx.holdEarnRequest.findUnique({
+        where: { id: h.id },
+        select: { id: true, status: true, lastRewardAt: true, lockedAt: true, createdAt: true },
+      });
+      if (!fresh || fresh.status !== "active") return;
+      const from = fresh.lastRewardAt ?? fresh.lockedAt ?? fresh.createdAt;
+      if (!from) return;
+      const periods = safePeriodCount(from, now, freq);
+      if (periods <= 0) return;
+
+      const updated = await tx.holdEarnRequest.updateMany({
+        where: { id: h.id, status: "active", lastRewardAt: fresh.lastRewardAt ?? null },
+        data: { lastRewardAt: now },
+      });
+      if (updated.count !== 1) return;
+
+      const rewardEach = roundMoney((principal * ratePct) / 100);
+      const total = roundMoney(rewardEach * periods);
+      if (total <= 0) return;
+      await tx.coin.create({
+        data: {
+          regNo,
+          amount: total,
+          comment: `hold_earn_bonus_${h.id}`,
+        },
+      });
     });
   }
 }
@@ -479,7 +511,7 @@ export async function holdEarnLock(req: AuthenticatedRequest, res: Response) {
     await prisma.$transaction(async (tx) => {
       if (hold.fundSource === "reward_balance") {
         const coinRows = await tx.coin.findMany({ where: { regNo: user.regNo } });
-        const available = coinRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+        const available = sumAmountRows(coinRows);
         if (available < principal) {
           throw new Error("Not Enough reward balance");
         }
@@ -492,7 +524,7 @@ export async function holdEarnLock(req: AuthenticatedRequest, res: Response) {
         });
       } else if (hold.fundSource === "own_funds") {
         const bankRows = await tx.bank.findMany({ where: { regNo: user.regNo } });
-        const available = bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+        const available = sumAmountRows(bankRows);
         if (available < principal) {
           throw new Error("Not Enough own funds");
         }
@@ -509,13 +541,16 @@ export async function holdEarnLock(req: AuthenticatedRequest, res: Response) {
         throw new Error("Invalid fund source");
       }
 
-      await tx.holdEarnRequest.update({
-        where: { id: hold.id },
+      const locked = await tx.holdEarnRequest.updateMany({
+        where: { id: hold.id, status: "pending" },
         data: {
           status: "active",
           lockedAt,
         },
       });
+      if (locked.count !== 1) {
+        throw new Error("Hold request already processed");
+      }
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Could not lock Hold & Earn";
@@ -569,6 +604,7 @@ export async function holdEarnWithdraw(req: AuthenticatedRequest, res: Response)
   let gst = 0;
   let net = principal;
 
+  let totalBonus = 0;
   if (early) {
     penalty = roundMoney(principal * 0.2);
     const setting = (await prisma.setting.findFirst()) ?? ({} as any);
@@ -586,24 +622,15 @@ export async function holdEarnWithdraw(req: AuthenticatedRequest, res: Response)
         comment: { startsWith: bonusPrefix },
       },
     });
-    const totalBonus = bonusRows.reduce((a, b) => {
+    totalBonus = bonusRows.reduce((a, b) => {
       const amt = Number(b.amount ?? 0);
       return a + (amt > 0 ? amt : 0);
     }, 0);
-    if (totalBonus > 0) {
-      await prisma.coin.create({
-        data: {
-          regNo: user.regNo,
-          amount: -1 * totalBonus,
-          comment: `hold_earn_bonus_removed_${hold.id}`,
-        },
-      });
-    }
   }
 
   await prisma.$transaction(async (tx) => {
-    await tx.holdEarnRequest.update({
-      where: { id: hold.id },
+    const updated = await tx.holdEarnRequest.updateMany({
+      where: { id: hold.id, status: "active" },
       data: {
         status: early ? "early_withdrawn" : "withdrawn",
         withdrawnAt: now,
@@ -613,6 +640,19 @@ export async function holdEarnWithdraw(req: AuthenticatedRequest, res: Response)
         netAmount: net,
       },
     });
+    if (updated.count !== 1) {
+      throw new Error("Hold request already processed");
+    }
+
+    if (early && totalBonus > 0) {
+      await tx.coin.create({
+        data: {
+          regNo: user.regNo,
+          amount: -1 * totalBonus,
+          comment: `hold_earn_bonus_removed_${hold.id}`,
+        },
+      });
+    }
 
     if (hold.fundSource === "reward_balance") {
       await tx.coin.create({
@@ -680,10 +720,31 @@ function roundMoney(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
+async function approvedDepositPrincipalSum(regNo: string): Promise<number> {
+  const agg = await prisma.deposit.aggregate({
+    where: { regNo, status: "approved" },
+    _sum: { amount: true },
+  });
+  return Number(agg._sum.amount ?? 0);
+}
+
+const SETTLED_STATUS_VALUES = [
+  "approved",
+  "paid",
+  "success",
+  "successful",
+  "done",
+  "completed",
+  "complete",
+  "active",
+  "withdrawn",
+  "early_withdrawn",
+] as const;
+
 function normalizeStatus(raw: unknown): string | null {
   const s = String(raw ?? "").trim().toLowerCase();
   if (!s) return null;
-  if (["approved", "paid", "success", "successful", "done", "completed", "complete", "active", "withdrawn", "early_withdrawn"].includes(s)) {
+  if ((SETTLED_STATUS_VALUES as readonly string[]).includes(s)) {
     return "approved";
   }
   if (["pending", "cancelled", "canceled", "failed", "failure", "rejected", "expired", "dropped", "user_dropped", "incomplete"].includes(s)) {
@@ -804,7 +865,8 @@ export async function buildFullTransactionLedger(regNo: string) {
   for (const d of deposits) {
     const st = String(d.status ?? "").toLowerCase();
     if (!isCompletedStatus(st)) continue;
-    const showAmount = ledgerNum(d.total_amount);
+    // Keep deposit row informational only; actual wallet movement is tracked in bank ledger entries.
+    const showAmount = 0;
     rows.push({
       ledger_id: `d_${d.id}`,
       ledger_source: "deposit",
@@ -1021,7 +1083,7 @@ export async function coinHistory(req: AuthenticatedRequest, res: Response) {
     return res.status(404).json({ status: "done", message: "User Not found." });
   }
 
-  const rows = await prisma.coin.findMany({ where: { regNo: user.regNo } });
+  const rows = await prisma.coin.findMany({ where: { regNo: user.regNo }, orderBy: { id: "desc" } });
   return res.json({ status: "done", wallet_history: rows, user });
 }
 
@@ -1031,7 +1093,10 @@ export async function depositHistory(req: AuthenticatedRequest, res: Response) {
     return res.status(404).json({ status: "done", message: "User Not found." });
   }
 
-  const rows = await prisma.deposit.findMany({ where: { regNo: user.regNo } });
+  const rows = await prisma.deposit.findMany({
+    where: { regNo: user.regNo, status: { in: [...SETTLED_STATUS_VALUES] } },
+    orderBy: { id: "desc" }
+  });
   return res.json({ status: "done", wallet_history: rows });
 }
 
@@ -1041,8 +1106,11 @@ export async function bankHistory(req: AuthenticatedRequest, res: Response) {
     return res.status(404).json({ status: "done", message: "User Not found." });
   }
 
-  const walletHistory = await prisma.bank.findMany({ where: { regNo: user.regNo } });
-  const bankBalance = walletHistory.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+  const walletHistory = await prisma.bank.findMany({
+    where: { regNo: user.regNo, OR: [{ status: null }, { status: { in: [...SETTLED_STATUS_VALUES] } }] },
+    orderBy: { id: "desc" }
+  });
+  const bankBalance = sumSettledAmountRows(walletHistory);
   return res.json({
     status: "done",
     wallet_history: walletHistory,
@@ -1104,10 +1172,7 @@ export async function deposit2(req: AuthenticatedRequest, res: Response) {
     return res.status(422).json({ status: false, v_errors: { amount: ["Amount is required."] } });
   }
   const setting = ((await prisma.setting.findFirst()) ?? {}) as Record<string, number>;
-  const oldDeposits = (await prisma.bank.findMany({ where: { regNo: user.regNo } })).reduce(
-    (a, b) => a + Number(b.amount ?? 0),
-    0
-  );
+  const oldDeposits = await approvedDepositPrincipalSum(user.regNo);
   const limit = Number(setting.deposit_limit ?? 0);
   const chargeable = oldDeposits < limit ? Math.max(oldDeposits + amount - limit, 0) : amount;
   const adminCharge = Number((((chargeable * Number(setting.deposit_admin_charge ?? 0)) / 100) || 0).toFixed(2));
@@ -1138,10 +1203,7 @@ export async function deposit(req: AuthenticatedRequest, res: Response) {
   }
 
   const setting = ((await prisma.setting.findFirst()) ?? {}) as Record<string, number>;
-  const oldDeposits = (await prisma.bank.findMany({ where: { regNo: user.regNo } })).reduce(
-    (a, b) => a + Number(b.amount ?? 0),
-    0
-  );
+  const oldDeposits = await approvedDepositPrincipalSum(user.regNo);
   const limit = Number(setting.deposit_limit ?? 0);
   const chargeable = oldDeposits < limit ? Math.max(oldDeposits + amount - limit, 0) : amount;
   const adminCharge = Number((((chargeable * Number(setting.deposit_admin_charge ?? 0)) / 100) || 0).toFixed(2));
@@ -1197,13 +1259,36 @@ async function levelMlm(regNo: string, amount: number, sourceId: number) {
     const sponsor = String(u.sponser_id);
     const eligible = await prisma.perday.findFirst({ where: { regNo: sponsor }, select: { id: true } });
     if (eligible) {
-      const dup = await prisma.wallet.findFirst({
-        where: { regNo: sponsor, source_id: sourceId, level }
-      });
-      if (!dup) {
+      try {
         await prisma.wallet.create({
           data: { regNo: sponsor, amount: mlmPercentage(level, amount), level, source_id: sourceId, comment: "level_income" }
         });
+      } catch (e) {
+        if (!(e instanceof Prisma.PrismaClientKnownRequestError) || e.code !== "P2002") {
+          throw e;
+        }
+      }
+    }
+    currentReg = sponsor;
+  }
+}
+
+async function levelMlmInTx(tx: Prisma.TransactionClient, regNo: string, amount: number, sourceId: number) {
+  let currentReg = regNo;
+  for (let level = 1; level <= 12; level += 1) {
+    const u = await tx.user.findFirst({ where: { regNo: currentReg }, select: { regNo: true, sponser_id: true } });
+    if (!u || !u.sponser_id) break;
+    const sponsor = String(u.sponser_id);
+    const eligible = await tx.perday.findFirst({ where: { regNo: sponsor }, select: { id: true } });
+    if (eligible) {
+      try {
+        await tx.wallet.create({
+          data: { regNo: sponsor, amount: mlmPercentage(level, amount), level, source_id: sourceId, comment: "level_income" }
+        });
+      } catch (e) {
+        if (!(e instanceof Prisma.PrismaClientKnownRequestError) || e.code !== "P2002") {
+          throw e;
+        }
       }
     }
     currentReg = sponsor;
@@ -1242,22 +1327,26 @@ async function fulfillPackagePurchaseFromCashfree(regNo: string, meta: Record<st
     return false;
   }
 
+  const existsByTxn = await prisma.package.findFirst({ where: { txn: orderId }, select: { id: true } });
+  if (existsByTxn) return true;
   const exists = await prisma.package.findFirst({ where: { regNo, amount } });
   if (exists) return true;
 
-  const pkgInsert = await prisma.package.create({
-    data: {
-      regNo,
-      amount,
-      payment_method: "Cashfree",
-      gst,
-      total_amount: myTotal,
-      status: "approved",
-      txn: orderId
-    }
+  await prisma.$transaction(async (tx) => {
+    const pkgInsert = await tx.package.create({
+      data: {
+        regNo,
+        amount,
+        payment_method: "Cashfree",
+        gst,
+        total_amount: myTotal,
+        status: "approved",
+        txn: orderId
+      }
+    });
+    await tx.perday.create({ data: { regNo, amount } });
+    await levelMlmInTx(tx, regNo, amount, pkgInsert.id);
   });
-  await prisma.perday.create({ data: { regNo, amount } });
-  await levelMlm(regNo, amount, pkgInsert.id);
   return true;
 }
 
@@ -1268,6 +1357,9 @@ async function fulfillCibilFromCashfree(regNo: string, meta: Record<string, unkn
   });
   if (pending) return;
 
+  const calculatedGst = 15.25;
+  const calculatedTotal = 100;
+  const calculatedAmount = roundMoney(calculatedTotal - calculatedGst);
   const appId = `CIBIL${Date.now()}`;
   await prisma.cibileReportRequest.create({
     data: {
@@ -1278,9 +1370,9 @@ async function fulfillCibilFromCashfree(regNo: string, meta: Record<string, unkn
       mobile: String(meta.mobile),
       pan_number: String(meta.pan_number),
       status: "pending",
-      amount: Number(meta.amount),
-      gst: Number(meta.gst),
-      total_amount: Number(meta.total_amount),
+      amount: calculatedAmount,
+      gst: calculatedGst,
+      total_amount: calculatedTotal,
       application_id: appId
     }
   });
@@ -1338,7 +1430,7 @@ export async function purchasePackage(req: AuthenticatedRequest, res: Response) 
   const setting = ((await prisma.setting.findFirst()) ?? {}) as Record<string, number>;
   const gst = Number((((amount * Number(setting.deposit_gst ?? 0)) / 100) || 0).toFixed(2));
   const myTotal = Number((amount + gst).toFixed(2));
-  if (gstInput !== gst) return res.status(422).json({ status: false, message: `GST must be ${gst}` });
+  if (Number(gstInput.toFixed(2)) !== gst) return res.status(422).json({ status: false, message: `GST must be ${gst}` });
   if (Number(totalAmount.toFixed(2)) !== myTotal) {
     return res.status(422).json({ status: false, message: `Total amount must be ${myTotal}` });
   }
@@ -1366,7 +1458,7 @@ export async function purchasePackage(req: AuthenticatedRequest, res: Response) 
   }
 
   const bankRows = await prisma.bank.findMany({ where: { regNo: user.regNo } });
-  if (bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0) < myTotal) {
+  if (sumAmountRows(bankRows) < myTotal) {
     return res.status(500).json({ status: false, message: "Not Enough Balance." });
   }
 
@@ -1412,21 +1504,27 @@ export async function bankWalletWithdraw(req: AuthenticatedRequest, res: Respons
     });
   }
 
-  const bankRows = await prisma.bank.findMany({ where: { regNo: user.regNo } });
-  const available = bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
-  if (available < amount) {
-    return res.status(400).json({ status: false, message: "Not Enough Balance" });
+  try {
+    await prisma.$transaction(async (tx) => {
+      const bankRows = await tx.bank.findMany({ where: { regNo: user.regNo } });
+      const available = sumAmountRows(bankRows);
+      if (available < amount) {
+        throw new Error("Not Enough Balance");
+      }
+      await tx.bank.create({
+        data: {
+          regNo: user.regNo,
+          amount: -1 * amount,
+          comment: "withdraw",
+          txn_type: "debit",
+          status: "pending",
+        },
+      });
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Withdrawal failed";
+    return res.status(400).json({ status: false, message: msg });
   }
-
-  await prisma.bank.create({
-    data: {
-      regNo: user.regNo,
-      amount: -1 * amount,
-      comment: "withdraw",
-      txn_type: "debit",
-      status: "pending",
-    },
-  });
 
   return res.json({ status: true, message: "Withdrawal request submitted successfully" });
 }
@@ -1447,21 +1545,27 @@ export async function incomeWalletWithdraw(req: AuthenticatedRequest, res: Respo
     });
   }
 
-  const walletRows = await prisma.wallet.findMany({ where: { regNo: user.regNo } });
-  const available = walletRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
-  if (available < amount) {
-    return res.status(400).json({ status: false, message: "Not Enough Balance" });
+  try {
+    await prisma.$transaction(async (tx) => {
+      const walletRows = await tx.wallet.findMany({ where: { regNo: user.regNo } });
+      const available = sumAmountRows(walletRows);
+      if (available < amount) {
+        throw new Error("Not Enough Balance");
+      }
+      await tx.wallet.create({
+        data: {
+          regNo: user.regNo,
+          amount: -1 * amount,
+          comment: "withdraw",
+          txn_type: "debit",
+          status: "pending",
+        },
+      });
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Withdrawal failed";
+    return res.status(400).json({ status: false, message: msg });
   }
-
-  await prisma.wallet.create({
-    data: {
-      regNo: user.regNo,
-      amount: -1 * amount,
-      comment: "withdraw",
-      txn_type: "debit",
-      status: "pending",
-    },
-  });
 
   return res.json({ status: true, message: "Withdrawal request submitted successfully" });
 }
@@ -1476,28 +1580,51 @@ export async function coinWalletWithdraw(req: AuthenticatedRequest, res: Respons
   if (!hasPrev && amount < 1500) {
     return res.json({ status: false, message: "First withdraw minimum 1500 Rs required" });
   }
-  const balRows = await prisma.coin.findMany({ where: { regNo: user.regNo } });
-  if (balRows.reduce((a, b) => a + Number(b.amount ?? 0), 0) < amount) return res.json({ status: false, message: "Not Enough Balance" });
-
-  await prisma.wallet.create({ data: { regNo: user.regNo, amount, comment: "coin_redeam" } });
-  await prisma.coin.create({ data: { regNo: user.regNo, amount: -1 * amount, comment: "withdraw" } });
+  try {
+    await prisma.$transaction(async (tx) => {
+      const balRows = await tx.coin.findMany({ where: { regNo: user.regNo } });
+      const available = sumAmountRows(balRows);
+      if (available < amount) {
+        throw new Error("Not Enough Balance");
+      }
+      await tx.wallet.create({ data: { regNo: user.regNo, amount, comment: "coin_redeam" } });
+      await tx.coin.create({ data: { regNo: user.regNo, amount: -1 * amount, comment: "withdraw" } });
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Withdrawal failed";
+    return res.json({ status: false, message: msg });
+  }
   return res.json({ status: "done", message: "Successfully Withdraw" });
 }
 
 export async function bankWalletWithdrawCancel(req: AuthenticatedRequest, res: Response) {
   const user = req.user;
   if (!user) return res.status(404).json({ status: "done", message: "User Not found." });
-  const walletHistory = await prisma.bank.findMany({ where: { regNo: user.regNo, comment: "withdraw" } });
+  const walletHistory = await prisma.bank.findMany({
+    where: {
+      regNo: user.regNo,
+      comment: "withdraw",
+      OR: [{ status: null }, { status: { in: [...SETTLED_STATUS_VALUES] } }]
+    },
+    orderBy: { id: "desc" }
+  });
   const balRows = await prisma.bank.findMany({ where: { regNo: user.regNo } });
-  return res.json({ status: "done", wallet_history: walletHistory, bank_balance: balRows.reduce((a, b) => a + Number(b.amount ?? 0), 0) });
+  return res.json({ status: "done", wallet_history: walletHistory, bank_balance: sumSettledAmountRows(balRows) });
 }
 
 export async function incomeWalletWithdrawCancel(req: AuthenticatedRequest, res: Response) {
   const user = req.user;
   if (!user) return res.status(404).json({ status: "done", message: "User Not found." });
-  const walletHistory = await prisma.wallet.findMany({ where: { regNo: user.regNo, comment: "withdraw" } });
+  const walletHistory = await prisma.wallet.findMany({
+    where: {
+      regNo: user.regNo,
+      comment: "withdraw",
+      OR: [{ status: null }, { status: { in: [...SETTLED_STATUS_VALUES] } }]
+    },
+    orderBy: { id: "desc" }
+  });
   const balRows = await prisma.wallet.findMany({ where: { regNo: user.regNo } });
-  return res.json({ status: "done", wallet_history: walletHistory, bank_balance: balRows.reduce((a, b) => a + Number(b.amount ?? 0), 0) });
+  return res.json({ status: "done", wallet_history: walletHistory, bank_balance: sumSettledAmountRows(balRows) });
 }
 
 export async function updatePassword(req: AuthenticatedRequest, res: Response) {
@@ -2106,7 +2233,7 @@ export async function createKycDigilockerUrl(req: AuthenticatedRequest, res: Res
 
     if (documentType === "AADHAAR") {
       const bankRows = await prisma.bank.findMany({ where: { regNo: user.regNo } });
-      const available = bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+      const available = sumAmountRows(bankRows);
       if (available < AADHAAR_KYC_FEE) {
         return res.status(400).json({
           status: false,
@@ -2278,7 +2405,7 @@ export async function secureIdWebhook(req: Request, res: Response) {
         if (alreadyCharged) return;
 
         const bankRows = await tx.bank.findMany({ where: { regNo } });
-        const available = bankRows.reduce((a, b) => a + Number(b.amount ?? 0), 0);
+        const available = sumAmountRows(bankRows);
         if (available < AADHAAR_KYC_FEE) return;
 
         await tx.bank.create({
@@ -2347,42 +2474,47 @@ export async function loanRequest(req: AuthenticatedRequest, res: Response) {
   if (!Number.isFinite(loanAmount) || loanAmount <= 0 || loanAmount % 500 !== 0) {
     return res.status(422).json({ status: false, message: "Loan amount must be in multiples of 500" });
   }
-  const pending = await prisma.loan.findFirst({ where: { regNo: user.regNo, status: "pending" }, select: { id: true } });
-  if (pending) return res.status(409).json({ status: false, message: "Your previous loan request is still pending" });
-  const bal = (await prisma.bank.findMany({ where: { regNo: user.regNo } })).reduce((a, b) => a + Number(b.amount ?? 0), 0);
-  if (bal < totalFee) {
-    return res.status(400).json({ status: false, message: "Not Enough Balance" });
-  }
-
   const nowLoan = new Date();
   const applicationId = `LN${user.regNo.replace(/\W/g, "")}${nowLoan.getTime()}`.slice(0, 48);
-  await prisma.$transaction([
-    prisma.loan.create({
-      data: {
-        regNo: user.regNo,
-        name: String(body.name),
-        mobile: String(body.mobile),
-        pan_number: String(body.pan_number),
-        amount: loanAmount,
-        loan_type: String(body.loan_type),
-        status: "pending",
-        l_name: (body.l_name as string | null) ?? null,
-        m_name: (body.m_name as string | null) ?? null,
-        fee: 500,
-        fee_gst: 90,
-        total_fee: totalFee,
-        application_id: applicationId,
-        login_date: nowLoan,
-        created_at: nowLoan,
-        updated_at: nowLoan
-      }
-    }),
-    prisma.bank.create({
-      data: { regNo: user.regNo, amount: -1 * totalFee, comment: "loan", txn_type: "debit" }
-    })
-  ]);
+  try {
+    await prisma.$transaction(async (tx) => {
+      const pending = await tx.loan.findFirst({ where: { regNo: user.regNo, status: "pending" }, select: { id: true } });
+      if (pending) throw new Error("Your previous loan request is still pending");
+      const rows = await tx.bank.findMany({ where: { regNo: user.regNo } });
+      const balance = sumAmountRows(rows);
+      if (balance < totalFee) throw new Error("Not Enough Balance");
 
-  return res.json({ status: true, message: "Loan request submitted successfully" });
+      await tx.loan.create({
+        data: {
+          regNo: user.regNo,
+          name: String(body.name),
+          mobile: String(body.mobile),
+          pan_number: String(body.pan_number),
+          amount: loanAmount,
+          loan_type: String(body.loan_type),
+          status: "pending",
+          l_name: (body.l_name as string | null) ?? null,
+          m_name: (body.m_name as string | null) ?? null,
+          fee: 500,
+          fee_gst: 90,
+          total_fee: totalFee,
+          application_id: applicationId,
+          login_date: nowLoan,
+          created_at: nowLoan,
+          updated_at: nowLoan
+        }
+      });
+      await tx.bank.create({
+        data: { regNo: user.regNo, amount: -1 * totalFee, comment: "loan", txn_type: "debit" }
+      });
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Loan request failed";
+    const code = msg.includes("pending") ? 409 : 400;
+    return res.status(code).json({ status: false, message: msg });
+  }
+
+  return res.json({ status: true, message: "Insurance request submitted successfully" });
 }
 
 export async function loanHistory(req: AuthenticatedRequest, res: Response) {
@@ -2399,30 +2531,41 @@ export async function insuranceRequest(req: AuthenticatedRequest, res: Response)
   if (!body.name || !body.mobile || !body.pan_number || !body.insurance_type) {
     return res.status(422).json({ status: false, errors: { message: "Validation failed" } });
   }
-  const pending = await prisma.insurance.findFirst({ where: { regNo: user.regNo, status: "pending" }, select: { id: true } });
-  if (pending) {
-    return res.status(409).json({ status: false, message: "Your previous insurance request is still pending" });
-  }
   const nowIns = new Date();
   const insAppId = `INS${user.regNo.replace(/\W/g, "")}${nowIns.getTime()}`.slice(0, 48);
-  await prisma.insurance.create({
-    data: {
-      regNo: user.regNo,
-      name: String(body.name),
-      mobile: String(body.mobile),
-      pan_number: String(body.pan_number),
-      amount: 0,
-      insurance_type: String(body.insurance_type),
-      status: "pending",
-      l_name: (body.l_name as string | null) ?? null,
-      m_name: (body.m_name as string | null) ?? null,
-      vehicle_number: (body.vehicle_number as string | null) ?? null,
-      application_id: insAppId,
-      login_date: nowIns,
-      created_at: nowIns,
-      updated_at: nowIns
-    }
-  });
+  try {
+    await prisma.$transaction(
+      async (tx) => {
+        const pending = await tx.insurance.findFirst({ where: { regNo: user.regNo, status: "pending" }, select: { id: true } });
+        if (pending) {
+          throw new Error("Your previous insurance request is still pending");
+        }
+        await tx.insurance.create({
+          data: {
+            regNo: user.regNo,
+            name: String(body.name),
+            mobile: String(body.mobile),
+            pan_number: String(body.pan_number),
+            amount: 0,
+            insurance_type: String(body.insurance_type),
+            status: "pending",
+            l_name: (body.l_name as string | null) ?? null,
+            m_name: (body.m_name as string | null) ?? null,
+            vehicle_number: (body.vehicle_number as string | null) ?? null,
+            application_id: insAppId,
+            login_date: nowIns,
+            created_at: nowIns,
+            updated_at: nowIns
+          }
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Insurance request failed";
+    const code = msg.includes("pending") ? 409 : 400;
+    return res.status(code).json({ status: false, message: msg });
+  }
   return res.json({ status: true, message: "Loan request submitted successfully" });
 }
 
@@ -2448,31 +2591,46 @@ export async function cibilSubmit(req: AuthenticatedRequest, res: Response) {
 
   const calculatedGst = 15.25;
   const calculatedTotal = 100;
+  const calculatedAmount = roundMoney(calculatedTotal - calculatedGst);
   if (Number(body.gst) !== calculatedGst) return res.status(400).json({ status: false, message: "Invalid GST amount" });
   if (Number(body.total_amount) !== calculatedTotal) {
     return res.status(400).json({ status: false, message: "Invalid total amount" });
   }
-  const balRows = await prisma.bank.findMany({ where: { regNo: user.regNo } });
-  if (balRows.reduce((a, b) => a + Number(b.amount ?? 0), 0) < calculatedTotal) {
-    return res.status(400).json({ status: false, message: "Not Enough Balance" });
-  }
+  if (Number(body.amount) !== calculatedAmount) return res.status(400).json({ status: false, message: "Invalid amount" });
   const appId = `CIBIL${Date.now()}`;
-  await prisma.cibileReportRequest.create({
-    data: {
-      regNo: user.regNo,
-      name: String(body.name),
-      m_name: (body.m_name as string | null) ?? null,
-      l_name: (body.l_name as string | null) ?? null,
-      mobile: String(body.mobile),
-      pan_number: String(body.pan_number),
-      status: "pending",
-      amount: Number(body.amount),
-      gst: calculatedGst,
-      total_amount: calculatedTotal,
-      application_id: appId
-    }
-  });
-  await prisma.bank.create({ data: { regNo: user.regNo, amount: -calculatedTotal, comment: "buy_cibil_report", txn_type: "debit" } });
+  try {
+    await prisma.$transaction(async (tx) => {
+      const pending = await tx.cibileReportRequest.findFirst({
+        where: { regNo: user.regNo, status: "pending" },
+        select: { id: true }
+      });
+      if (pending) throw new Error("Previous request still pending");
+      const balRows = await tx.bank.findMany({ where: { regNo: user.regNo } });
+      const balance = sumAmountRows(balRows);
+      if (balance < calculatedTotal) throw new Error("Not Enough Balance");
+
+      await tx.cibileReportRequest.create({
+        data: {
+          regNo: user.regNo,
+          name: String(body.name),
+          m_name: (body.m_name as string | null) ?? null,
+          l_name: (body.l_name as string | null) ?? null,
+          mobile: String(body.mobile),
+          pan_number: String(body.pan_number),
+          status: "pending",
+          amount: calculatedAmount,
+          gst: calculatedGst,
+          total_amount: calculatedTotal,
+          application_id: appId
+        }
+      });
+      await tx.bank.create({ data: { regNo: user.regNo, amount: -calculatedTotal, comment: "buy_cibil_report", txn_type: "debit" } });
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "CIBIL request failed";
+    const code = msg.includes("pending") ? 409 : 400;
+    return res.status(code).json({ status: false, message: msg });
+  }
   return res.json({ status: true, message: "CIBIL request submitted successfully" });
 }
 
@@ -2511,10 +2669,7 @@ export async function createCashfreeSession(req: AuthenticatedRequest, res: Resp
         return res.status(422).json({ status: false, v_errors: { amount: ["Amount is required."] } });
       }
       const setting = ((await prisma.setting.findFirst()) ?? {}) as Record<string, number>;
-      const oldDeposits = (await prisma.bank.findMany({ where: { regNo: user.regNo } })).reduce(
-        (a, b) => a + Number(b.amount ?? 0),
-        0
-      );
+      const oldDeposits = await approvedDepositPrincipalSum(user.regNo);
       const limit = Number(setting.deposit_limit ?? 0);
       const chargeable = oldDeposits < limit ? Math.max(oldDeposits + amount - limit, 0) : amount;
       const adminCharge = Number((((chargeable * Number(setting.deposit_admin_charge ?? 0)) / 100) || 0).toFixed(2));
@@ -2771,13 +2926,15 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
     if ((deposit.status ?? "") === "approved") return res.json({ ok: true });
 
     if (isPaymentSuccess) {
-      await prisma.deposit.update({
-        where: { id: deposit.id },
-        data: { status: "approved", cf_payment_id: cfPaymentId ?? undefined }
-      });
-      const reg = deposit.regNo;
-      if (reg) {
-        await prisma.bank.create({
+      await prisma.$transaction(async (tx) => {
+        const updated = await tx.deposit.updateMany({
+          where: { id: deposit.id, NOT: { status: "approved" } },
+          data: { status: "approved", cf_payment_id: cfPaymentId ?? undefined }
+        });
+        if (updated.count !== 1) return;
+        const reg = deposit.regNo;
+        if (!reg) return;
+        await tx.bank.create({
           data: {
             regNo: reg,
             amount: Number(deposit.amount ?? 0),
@@ -2785,9 +2942,12 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
             txn_type: "credit"
           }
         });
-      }
+      });
     } else if (isPaymentFailed || (orderStatus && orderStatus !== "ACTIVE")) {
-      await prisma.deposit.update({ where: { id: deposit.id }, data: { status: "rejected" } });
+      await prisma.deposit.updateMany({
+        where: { id: deposit.id, NOT: { status: "approved" } },
+        data: { status: "rejected" }
+      });
     }
     return res.json({ ok: true });
   }
@@ -2797,6 +2957,19 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
   if (cfRow.status === "paid") return res.json({ ok: true });
 
   if (isPaymentSuccess) {
+    let claimed = await prisma.cashfreeOrder.updateMany({
+      where: { id: cfRow.id, status: "pending" },
+      data: { status: "processing", cf_payment_id: cfPaymentId ?? undefined }
+    });
+    if (claimed.count !== 1) {
+      const processingStaleBefore = new Date(Date.now() - 5 * 60 * 1000);
+      claimed = await prisma.cashfreeOrder.updateMany({
+        where: { id: cfRow.id, status: "processing", updated_at: { lte: processingStaleBefore } },
+        data: { status: "processing", cf_payment_id: cfPaymentId ?? undefined }
+      });
+    }
+    if (claimed.count !== 1) return res.json({ ok: true });
+
     const meta = (cfRow.meta ?? {}) as Record<string, unknown>;
     try {
       if (cfRow.purpose === "package_purchase") {
@@ -2804,6 +2977,10 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
         if (!fulfilled) {
           // eslint-disable-next-line no-console
           console.error("cashfreeWebhook package purchase not fulfilled", orderId);
+          await prisma.cashfreeOrder.updateMany({
+            where: { id: cfRow.id, status: "processing" },
+            data: { status: "pending" }
+          });
           return res.json({ ok: true });
         }
       } else if (cfRow.purpose === "cibil_report") {
@@ -2813,14 +2990,21 @@ export async function cashfreeWebhook(req: AuthenticatedRequest, res: Response) 
       }
     } catch (e) {
       console.error("cashfreeWebhook fulfill error", e);
+      await prisma.cashfreeOrder.updateMany({
+        where: { id: cfRow.id, status: "processing" },
+        data: { status: "pending" }
+      });
       return res.json({ ok: false });
     }
-    await prisma.cashfreeOrder.update({
-      where: { id: cfRow.id },
+    await prisma.cashfreeOrder.updateMany({
+      where: { id: cfRow.id, status: "processing" },
       data: { status: "paid", cf_payment_id: cfPaymentId ?? undefined }
     });
   } else if (isPaymentFailed || (orderStatus && orderStatus !== "ACTIVE")) {
-    await prisma.cashfreeOrder.update({ where: { id: cfRow.id }, data: { status: "rejected" } });
+    await prisma.cashfreeOrder.updateMany({
+      where: { id: cfRow.id, status: { in: ["pending", "processing"] } },
+      data: { status: "rejected" }
+    });
   }
 
   return res.json({ ok: true });

@@ -90,3 +90,37 @@ export async function cashfreeCreatePgOrder(input: CashfreeCreateOrderInput): Pr
 
   return { payment_session_id: sessionId, order_id: String(data.order_id ?? input.orderId) };
 }
+
+export async function cashfreeGetPgOrderStatus(orderId: string): Promise<{
+  order_status: string | null;
+  payment_status: string | null;
+}> {
+  const appId = process.env.CASHFREE_APP_ID;
+  const secret = process.env.CASHFREE_SECRET_KEY;
+  if (!appId || !secret) {
+    throw new Error("CASHFREE_APP_ID and CASHFREE_SECRET_KEY must be set");
+  }
+  const oid = String(orderId ?? "").trim();
+  if (!oid) throw new Error("orderId is required");
+
+  const res = await fetch(`${pgBaseUrl()}/orders/${encodeURIComponent(oid)}`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-version": CF_API_VERSION,
+      "x-client-id": appId,
+      "x-client-secret": secret
+    }
+  });
+  const data = (await res.json().catch(() => ({}))) as any;
+  if (!res.ok) {
+    const msg =
+      (data?.message as string) ||
+      (data?.error?.message as string) ||
+      `Cashfree error ${res.status}`;
+    throw new Error(msg);
+  }
+  const orderStatus = typeof data?.order_status === "string" ? data.order_status : null;
+  const paymentStatus = typeof data?.payment_status === "string" ? data.payment_status : null;
+  return { order_status: orderStatus, payment_status: paymentStatus };
+}

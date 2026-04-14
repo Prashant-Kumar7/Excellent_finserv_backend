@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import bcrypt from "bcryptjs";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../shared/db.js";
 import type { AdminRequest } from "../../shared/middleware/adminAuth.js";
 import { signAdminSession } from "../../shared/auth/adminSession.js";
@@ -33,45 +34,39 @@ function mlmPercentage(level: number, amount: number) {
   return amount * (percentages[level] ?? 0);
 }
 
-async function levelMlm(regNo: string, amount: number, sourceId: number) {
-  try {
-    await prisma.$transaction(async (tx) => {
-      let currentRegNo = regNo;
-      for (let level = 1; level <= 12; level += 1) {
-        const user = await tx.user.findFirst({
-          where: { regNo: currentRegNo },
-          select: { regNo: true, sponser_id: true }
-        });
-        if (!user?.sponser_id) break;
-
-        const sponsorRegNo = String(user.sponser_id);
-        const eligible = await tx.perday.findFirst({
-          where: { regNo: sponsorRegNo },
-          select: { id: true }
-        });
-
-        if (eligible) {
-          const dup = await tx.wallet.findFirst({
-            where: { regNo: sponsorRegNo, source_id: sourceId, level },
-            select: { id: true }
-          });
-          if (!dup) {
-            await tx.wallet.create({
-              data: {
-                regNo: sponsorRegNo,
-                amount: mlmPercentage(level, amount),
-                level,
-                source_id: sourceId,
-                comment: "level_income"
-              }
-            });
-          }
-        }
-        currentRegNo = sponsorRegNo;
-      }
+async function levelMlmInTx(tx: Prisma.TransactionClient, regNo: string, amount: number, sourceId: number) {
+  let currentRegNo = regNo;
+  for (let level = 1; level <= 12; level += 1) {
+    const user = await tx.user.findFirst({
+      where: { regNo: currentRegNo },
+      select: { regNo: true, sponser_id: true }
     });
-  } catch (e) {
-    throw e;
+    if (!user?.sponser_id) break;
+
+    const sponsorRegNo = String(user.sponser_id);
+    const eligible = await tx.perday.findFirst({
+      where: { regNo: sponsorRegNo },
+      select: { id: true }
+    });
+
+    if (eligible) {
+      try {
+        await tx.wallet.create({
+          data: {
+            regNo: sponsorRegNo,
+            amount: mlmPercentage(level, amount),
+            level,
+            source_id: sourceId,
+            comment: "level_income"
+          }
+        });
+      } catch (e) {
+        if (!(e instanceof Prisma.PrismaClientKnownRequestError) || e.code !== "P2002") {
+          throw e;
+        }
+      }
+    }
+    currentRegNo = sponsorRegNo;
   }
 }
 
@@ -150,21 +145,29 @@ export async function updateDepositStatus(req: AdminRequest, res: Response) {
   }
   const deposit = await prisma.deposit.findUnique({ where: { id } });
   if (!deposit) return res.status(404).json({ status: "error", message: "Deposit not found" });
-  const prev = deposit.status ?? null;
-  await prisma.deposit.update({
-    where: { id },
-    data: { status, updated_at: new Date() }
-  });
-  if (status === "approved" && prev !== "approved") {
+  if (status === "approved") {
     if (!deposit.regNo) {
       return res.status(400).json({ status: "error", message: "deposit.regNo missing" });
     }
-    await prisma.bank.create({
-      data: {
-        regNo: deposit.regNo,
-        amount: Number(deposit.amount ?? 0),
-        comment: `Deposit Approved ID ${id}`
-      }
+    await prisma.$transaction(async (tx) => {
+      const updated = await tx.deposit.updateMany({
+        where: { id, NOT: { status: "approved" } },
+        data: { status, updated_at: new Date() }
+      });
+      if (updated.count !== 1) return;
+      await tx.bank.create({
+        data: {
+          regNo: deposit.regNo,
+          amount: Number(deposit.amount ?? 0),
+          comment: `Deposit Approved ID ${id}`,
+          txn_type: "credit"
+        }
+      });
+    });
+  } else {
+    await prisma.deposit.update({
+      where: { id },
+      data: { status, updated_at: new Date() }
     });
   }
   return res.json({ status: "done", message: "Status Updated" });
@@ -198,7 +201,10 @@ export async function updatePackagePurchaseStatus(req: AdminRequest, res: Respon
   if (!purchase) return res.status(404).json({ status: "error", message: "Record not found" });
 
   if (status === "rejected") {
-    await prisma.package.update({ where: { id }, data: { status: "rejected" } });
+    const updated = await prisma.package.updateMany({ where: { id, status: "pending" }, data: { status: "rejected" } });
+    if (updated.count !== 1) {
+      return res.status(400).json({ status: "error", message: "Only pending can be rejected" });
+    }
     return res.json({ status: "done", message: "Status rejected successfully" });
   }
 
@@ -206,12 +212,26 @@ export async function updatePackagePurchaseStatus(req: AdminRequest, res: Respon
     if (purchase.status !== "pending") {
       return res.status(400).json({ status: "error", message: "Only pending can be approved" });
     }
-    await prisma.package.update({ where: { id }, data: { status: "approved" } });
     if (!purchase.regNo) return res.status(400).json({ status: "error", message: "purchase.regNo missing" });
-    await prisma.perday.create({
-      data: { regNo: purchase.regNo, amount: Number(purchase.amount ?? 0) }
-    });
-    await levelMlm(purchase.regNo, Number(purchase.amount ?? 0), id);
+    const purchaseRegNo = purchase.regNo;
+    const purchaseAmount = Number(purchase.amount ?? 0);
+    try {
+      await prisma.$transaction(async (tx) => {
+        const updated = await tx.package.updateMany({
+          where: { id, status: "pending" },
+          data: { status: "approved" }
+        });
+        if (updated.count !== 1) throw new Error("Only pending can be approved");
+        await tx.perday.create({
+          data: { regNo: purchaseRegNo, amount: purchaseAmount }
+        });
+        await levelMlmInTx(tx, purchaseRegNo, purchaseAmount, id);
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Approval failed";
+      const code = msg === "Only pending can be approved" ? 400 : 422;
+      return res.status(code).json({ status: "error", message: msg });
+    }
     return res.json({ status: "done", message: "Approved & perday entry added" });
   }
 
@@ -281,12 +301,21 @@ export async function updateIncomeWithdrawStatus(req: AdminRequest, res: Respons
   const row = await prisma.wallet.findUnique({ where: { id } });
   if (!row) return res.status(404).json({ status: "error", message: "Record not found" });
   if (row.status !== "pending") return res.status(400).json({ status: "error", message: "Already processed" });
-  await prisma.wallet.update({ where: { id }, data: { status } });
-  if (status === "rejected") {
-    if (!row.regNo) return res.status(400).json({ status: "error", message: "wallet.regNo missing" });
-    await prisma.wallet.create({
-      data: { regNo: row.regNo, amount: -1 * Number(row.amount ?? 0), comment: "cancel_withdraw_return" }
+  try {
+    await prisma.$transaction(async (tx) => {
+      const updated = await tx.wallet.updateMany({ where: { id, status: "pending" }, data: { status } });
+      if (updated.count !== 1) throw new Error("Already processed");
+      if (status === "rejected") {
+        if (!row.regNo) throw new Error("wallet.regNo missing");
+        await tx.wallet.create({
+          data: { regNo: row.regNo, amount: -1 * Number(row.amount ?? 0), comment: "cancel_withdraw_return" }
+        });
+      }
     });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Status update failed";
+    const code = msg === "Already processed" ? 400 : 422;
+    return res.status(code).json({ status: "error", message: msg });
   }
   return res.json({ status: "done", message: "Status updated successfully" });
 }
@@ -300,16 +329,28 @@ export async function updateWalletWithdrawStatus(req: AdminRequest, res: Respons
   const row = await prisma.bank.findUnique({ where: { id } });
   if (!row) return res.status(404).json({ status: "error", message: "Record not found" });
   if (row.status !== "pending") return res.status(400).json({ status: "error", message: "Already processed" });
-  await prisma.bank.update({ where: { id }, data: { status, updated_at: new Date() } });
-  if (status === "rejected") {
-    if (!row.regNo) return res.status(400).json({ status: "error", message: "bank.regNo missing" });
-    await prisma.bank.create({
-      data: {
-        regNo: row.regNo,
-        amount: -1 * Number(row.amount ?? 0),
-        comment: "Withdraw rejected refund"
+  try {
+    await prisma.$transaction(async (tx) => {
+      const updated = await tx.bank.updateMany({
+        where: { id, status: "pending" },
+        data: { status, updated_at: new Date() }
+      });
+      if (updated.count !== 1) throw new Error("Already processed");
+      if (status === "rejected") {
+        if (!row.regNo) throw new Error("bank.regNo missing");
+        await tx.bank.create({
+          data: {
+            regNo: row.regNo,
+            amount: -1 * Number(row.amount ?? 0),
+            comment: "Withdraw rejected refund"
+          }
+        });
       }
     });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Status update failed";
+    const code = msg === "Already processed" ? 400 : 422;
+    return res.status(code).json({ status: "error", message: msg });
   }
   return res.json({ status: "done", message: "Status updated successfully" });
 }
@@ -400,7 +441,18 @@ export async function updateLoanStatus(req: AdminRequest, res: Response) {
   if (!status || !Number.isFinite(id)) {
     return res.status(422).json({ status: "error", message: "Invalid input" });
   }
-  await prisma.loan.update({ where: { id }, data: { status } });
+  const row = await prisma.loan.findUnique({ where: { id }, select: { id: true, status: true } });
+  if (!row) return res.status(404).json({ status: "error", message: "Record not found" });
+  if (row.status !== "pending") {
+    return res.status(400).json({ status: "error", message: "Only pending records can be updated" });
+  }
+  if (!["approved", "rejected"].includes(status)) {
+    return res.status(422).json({ status: "error", message: "Status must be approved or rejected" });
+  }
+  const updated = await prisma.loan.updateMany({ where: { id, status: "pending" }, data: { status } });
+  if (updated.count !== 1) {
+    return res.status(400).json({ status: "error", message: "Already processed" });
+  }
   return res.json({ status: "done", message: "Status updated successfully" });
 }
 
@@ -410,7 +462,18 @@ export async function updateCibileStatus(req: AdminRequest, res: Response) {
   if (!status || !Number.isFinite(id)) {
     return res.status(422).json({ status: "error", message: "Invalid input" });
   }
-  await prisma.cibileReportRequest.update({ where: { id }, data: { status } });
+  const row = await prisma.cibileReportRequest.findUnique({ where: { id }, select: { id: true, status: true } });
+  if (!row) return res.status(404).json({ status: "error", message: "Record not found" });
+  if (row.status !== "pending") {
+    return res.status(400).json({ status: "error", message: "Only pending records can be updated" });
+  }
+  if (!["approved", "rejected"].includes(status)) {
+    return res.status(422).json({ status: "error", message: "Status must be approved or rejected" });
+  }
+  const updated = await prisma.cibileReportRequest.updateMany({ where: { id, status: "pending" }, data: { status } });
+  if (updated.count !== 1) {
+    return res.status(400).json({ status: "error", message: "Already processed" });
+  }
   return res.json({ status: "done", message: "Status updated successfully" });
 }
 
@@ -420,7 +483,18 @@ export async function updateInsuranceStatus(req: AdminRequest, res: Response) {
   if (!status || !Number.isFinite(id)) {
     return res.status(422).json({ status: "error", message: "Invalid input" });
   }
-  await prisma.insurance.update({ where: { id }, data: { status } });
+  const row = await prisma.insurance.findUnique({ where: { id }, select: { id: true, status: true } });
+  if (!row) return res.status(404).json({ status: "error", message: "Record not found" });
+  if (row.status !== "pending") {
+    return res.status(400).json({ status: "error", message: "Only pending records can be updated" });
+  }
+  if (!["approved", "rejected"].includes(status)) {
+    return res.status(422).json({ status: "error", message: "Status must be approved or rejected" });
+  }
+  const updated = await prisma.insurance.updateMany({ where: { id, status: "pending" }, data: { status } });
+  if (updated.count !== 1) {
+    return res.status(400).json({ status: "error", message: "Already processed" });
+  }
   return res.json({ status: "done", message: "Status updated successfully" });
 }
 
