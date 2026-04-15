@@ -144,7 +144,6 @@ async function getUserForClientById(userId: number) {
       pan_image: true,
       current_house_no: true,
       current_village: true,
-      current_city: true,
       current_district: true,
       current_state: true,
       current_pincode: true,
@@ -1942,9 +1941,6 @@ function extractAadhaarProfileUpdate(input: Record<string, unknown>): Record<str
   if (district) {
     out.current_district = district;
   }
-  if (city) {
-    out.current_city = city;
-  }
   if (state) {
     out.current_state = state;
   }
@@ -2035,7 +2031,6 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
       aadhar_number: true,
       current_house_no: true,
       current_village: true,
-      current_city: true,
       current_district: true,
       current_state: true,
       current_pincode: true,
@@ -2076,7 +2071,6 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
     upi_id?: string | null;
     current_house_no?: string | null;
     current_village?: string | null;
-    current_city?: string | null;
     current_district?: string | null;
     current_state?: string | null;
     current_pincode?: string | null;
@@ -2128,8 +2122,6 @@ export async function updateProfile(req: AuthenticatedRequest, res: Response) {
   if (currentHouseNo !== undefined) data.current_house_no = currentHouseNo;
   const currentVillage = multipartString(body, "current_village");
   if (currentVillage !== undefined) data.current_village = currentVillage;
-  const currentCity = multipartString(body, "current_city");
-  if (currentCity !== undefined) data.current_city = currentCity;
   const currentDistrict = multipartString(body, "current_district");
   if (currentDistrict !== undefined) data.current_district = currentDistrict;
   const currentState = multipartString(body, "current_state");

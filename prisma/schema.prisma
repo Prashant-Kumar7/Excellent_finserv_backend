@@ -31,7 +31,6 @@ model User {
   pan_image      String?
   current_house_no String?
   current_village  String?
-  current_city     String?
   current_district String?
   current_state    String?
   current_pincode  String?
