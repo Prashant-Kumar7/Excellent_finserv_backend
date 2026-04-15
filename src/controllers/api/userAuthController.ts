@@ -21,7 +21,7 @@ type OtpRow = {
 
 const MOBILE_REGEX = /^[6-9][0-9]{9}$/;
 const MOBILE_FLEX_REGEX = /^[0-9]{10,15}$/;
-const REGNO_REGEX = /^EX[0-9]{6}([0-9]{2})?$/;
+const REGNO_REGEX = /^(?:EF[0-9]{6}|EX[0-9]{6}|EX[0-9]{8})$/;
 
 /** Multer / multipart often yields string or single-element array per field. */
 function readFormField(body: Record<string, unknown> | undefined, key: string): string {
@@ -118,7 +118,7 @@ export async function login(req: Request, res: Response) {
   if (!byRegNo && !byMobile) {
     return res.status(422).json({
       status: false,
-      message: "Use a 10-digit mobile number or User ID (e.g. EX000000)."
+      message: "Use a 10-digit mobile number or User ID (e.g. EF000000)."
     });
   }
 
